@@ -1,88 +1,53 @@
-"""Supabase-backed friendship acceptance for the S-Boot server account."""
+"""Native Talkin friend-request protocol helpers; no Supabase is required."""
 from __future__ import annotations
 
-import threading
-import time
-from typing import Callable
+from typing import Any
 
+from vendor.talkin_runtime import encode_query
 
+# Verified against Talkinchat 5.8.3 Android app:
+# RequestsActivity sends profile_update/send_requests with an empty value;
+# the friend request row's accept action sends profile_update/accept_friend
+# with the requester's username as Query.value.
+FRIEND_REQUESTS_HANDLER_ID = 17
 WELCOME_TEXT = "مرحبا بك في سيرفر بوتات s-boot\n\nلاختيار العربية أرسل 1\nلاختيار الإنجليزية أرسل 2"
 
 
-class FriendshipWatcher:
-    """Accept incoming Talkin friendship requests when the app exposes the shared table."""
+def request_friendships_query() -> bytes:
+    """Ask Talkin for the account's pending incoming friend requests."""
+    return encode_query("profile_update", type_="send_requests", value="")
 
-    def __init__(self, db_client, server_username: str, on_accept: Callable[[str], None], log: Callable[..., None] = print):
-        self.db = db_client
-        self.server_username = str(server_username or "").strip().lstrip("@")
-        self.on_accept = on_accept
-        self.log = log
-        self._server_id = ""
-        self._stop = threading.Event()
 
-    def stop(self) -> None:
-        self._stop.set()
+def accept_friend_query(username: str) -> bytes:
+    """Create the same accept_friend packet sent by the Talkin Android app."""
+    name = str(username or "").strip().lstrip("@")
+    if not name:
+        raise ValueError("username is required")
+    return encode_query("profile_update", type_="accept_friend", value=name)
 
-    def _resolve_server_id(self) -> str:
-        if self._server_id:
-            return self._server_id
-        if not self.db or not self.server_username:
-            return ""
-        try:
-            rows = self.db.table("profiles").select("id,username").eq("username", self.server_username).limit(1).execute().data or []
-            if not rows:
-                rows = self.db.table("profiles").select("id,username").ilike("username", self.server_username).limit(1).execute().data or []
-            if rows:
-                self._server_id = str(rows[0].get("id") or "")
-        except Exception as exc:
-            self.log("[FRIENDS] profile lookup failed", repr(exc))
-        return self._server_id
 
-    def accept_once(self) -> int:
-        """Accept all pending requests and notify only after the update succeeds."""
-        server_id = self._resolve_server_id()
-        if not server_id:
-            return 0
-        accepted = 0
-        try:
-            requests = (
-                self.db.table("friendships")
-                .select("id,requester_id,addressee_id,status")
-                .eq("addressee_id", server_id)
-                .eq("status", "pending")
-                .limit(100)
-                .execute().data
-                or []
-            )
-        except Exception as exc:
-            self.log("[FRIENDS] pending request lookup failed", repr(exc))
-            return 0
-        for request in requests:
-            request_id = str(request.get("id") or "")
-            requester_id = str(request.get("requester_id") or "")
-            if not request_id or not requester_id:
-                continue
-            try:
-                updated = (
-                    self.db.table("friendships")
-                    .update({"status": "accepted"})
-                    .eq("id", request_id)
-                    .eq("status", "pending")
-                    .execute().data
-                )
-                # Supabase may return an empty data array under RLS even when
-                # the update completed; the conditional update remains safe.
-                if updated is None:
-                    continue
-                profiles = self.db.table("profiles").select("username").eq("id", requester_id).limit(1).execute().data or []
-                username = str((profiles[0] if profiles else {}).get("username") or "").strip().lstrip("@")
-                if username:
-                    self.on_accept(username)
-                    accepted += 1
-            except Exception as exc:
-                self.log("[FRIENDS] request acceptance failed", request_id, repr(exc))
-        return accepted
-
-    def run(self, seconds: float = 1.0) -> None:
-        while not self._stop.wait(max(0.25, float(seconds))):
-            self.accept_once()
+def request_usernames(result: dict[str, Any]) -> list[str]:
+    """Extract usernames only from Talkin's friend-requests handler response."""
+    try:
+        handler_id = int(result.get("handler_id", 0) or 0)
+    except (TypeError, ValueError):
+        return []
+    if handler_id != FRIEND_REQUESTS_HANDLER_ID:
+        return []
+    users = result.get("users") or []
+    if isinstance(users, dict):
+        users = [users]
+    names: list[str] = []
+    seen: set[str] = set()
+    for user in users:
+        if not isinstance(user, dict):
+            continue
+        value = user.get(1, user.get("username", ""))
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else ""
+        username = str(value or "").strip().lstrip("@")
+        key = username.casefold()
+        if username and key not in seen:
+            names.append(username)
+            seen.add(key)
+    return names

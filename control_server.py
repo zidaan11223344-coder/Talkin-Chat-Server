@@ -87,22 +87,28 @@ class BotServerService:
     def _help(self, username: str) -> str:
         if self.registry.language(username) == "en":
             return (
-                "🛠️ S-Boot Server Commands\n"
-                "bot@password@room — add controller bot\n"
-                "hb@bot@password@room — add silent bot\n"
+                "🛠️ S-Boot Server — send these commands in this private chat\n"
+                "Add a controller bot: bot_username@bot_password@room_name\n"
+                "Example: ControlBot@password123@MainRoom\n"
+                "Add a silent bot: hb@bot_username@bot_password@room_name\n"
+                "Example: hb@SilentBot@password123@MainRoom\n"
                 "del@room / delall@room — remove bots\n"
                 "bots / room@room — server status\n"
                 "master@user@room / delmaster@user@room / masters@room\n"
-                "The controller bot accepts only administration, protection, invitations and list commands."
+                "The controller accepts only administration, protection, invitations and lists.\n"
+                "Keep bot passwords private. Change language: lang@ar / lang@en."
             )
         return (
-            "🛠️ أوامر سيرفر بوتات S-Boot\n"
-            "اسم_البوت@كلمة_المرور@اسم_الغرفة — إضافة بوت متحكم\n"
-            "hb@اسم_البوت@كلمة_المرور@اسم_الغرفة — إضافة بوت صامت\n"
+            "🛠️ سيرفر S-Boot — أرسل الأوامر التالية في هذا الخاص\n"
+            "إضافة بوت متحكم: اسم_البوت@كلمة_مروره@اسم_الغرفة\n"
+            "مثال: ControlBot@password123@MainRoom\n"
+            "إضافة بوت صامت: hb@اسم_البوت@كلمة_مروره@اسم_الغرفة\n"
+            "مثال: hb@SilentBot@password123@MainRoom\n"
             "del@الغرفة / delall@الغرفة — حذف البوتات\n"
             "bots / room@الغرفة — عرض الحالة\n"
             "master@اسم@الغرفة / delmaster@اسم@الغرفة / masters@الغرفة\n"
-            "البوت المتحكم يستخدم فقط الإدارة والحماية والدعوات وعرض القوائم داخل غرفته."
+            "البوت المتحكم للإدارة والحماية والدعوات وعرض القوائم فقط.\n"
+            "لا ترسل كلمات المرور في مجموعة. تغيير اللغة: lang@ar / lang@en."
         )
 
     @staticmethod

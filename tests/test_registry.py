@@ -1,10 +1,15 @@
 import tempfile
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
 from control_server import BotServerService
+from control_runtime import ControlAccountBot
+from friendships import accept_friend_query, request_friendships_query, request_usernames
 from registry import BotRegistry, BotSpec, RegistryError
 from state import CredentialVault, status_value
+from vendor.talkin_runtime import decode_message
 
 
 class RegistryTests(unittest.TestCase):
@@ -64,6 +69,72 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("_settings_room_users", invite_method)
         self.assertIn("occupants_list", invite_method)
         self.assertNotIn("_bot_is_room_owner", invite_method)
+
+    @staticmethod
+    def _query_fields(packet):
+        return {key: values[0] for key, values in decode_message(packet).items()}
+
+    def test_friend_request_packets_match_talkin_android_protocol(self):
+        poll = self._query_fields(request_friendships_query())
+        self.assertEqual(poll[1], b"profile_update")
+        self.assertEqual(poll[2], b"send_requests")
+        self.assertEqual(poll[11], b"")
+        accept = self._query_fields(accept_friend_query("@newfriend"))
+        self.assertEqual(accept[1], b"profile_update")
+        self.assertEqual(accept[2], b"accept_friend")
+        self.assertEqual(accept[11], b"newfriend")
+
+    def test_friend_request_response_handler_extracts_unique_usernames(self):
+        result = {"handler_id": 17, "users": [{1: "Alice"}, {1: "@alice"}, {1: "Bob"}]}
+        self.assertEqual(request_usernames(result), ["Alice", "Bob"])
+        self.assertEqual(request_usernames({"handler_id": 18, "users": [{1: "NotRequest"}]}), [])
+
+    def test_control_bot_accepts_and_welcomes_without_database_access(self):
+        class FakeRegistry:
+            def __init__(self):
+                self.pending = []
+            def set_pending_language(self, username):
+                self.pending.append(username)
+
+        class FakeService:
+            def __init__(self):
+                self.registry = FakeRegistry()
+
+        bot = ControlAccountBot.__new__(ControlAccountBot)
+        bot.service = FakeService()
+        bot._accepted_friends = set()
+        sent_queries, welcomes = [], []
+        bot.send_query = sent_queries.append
+        bot.send_private_text = lambda username, text: welcomes.append((username, text)) or True
+        count = bot._accept_friend_requests({"handler_id": 17, "users": [{1: "newfriend"}]})
+        self.assertEqual(count, 1)
+        self.assertEqual(bot.service.registry.pending, ["newfriend"])
+        self.assertIn("لاختيار العربية أرسل 1", welcomes[0][1])
+        self.assertEqual(self._query_fields(sent_queries[0])[2], b"accept_friend")
+
+    def test_private_help_is_localized_and_explains_add_commands(self):
+        service = BotServerService(self.temp.name, self.key, "Admin", spawn=False)
+        service.registry.set_pending_language("arabic_user")
+        service.registry.choose_language("arabic_user", "1")
+        arabic = service.handle_command("arabic_user", "help")
+        self.assertIn("اسم_البوت@كلمة_مروره@اسم_الغرفة", arabic)
+        service.registry.set_pending_language("english_user")
+        service.registry.choose_language("english_user", "2")
+        english = service.handle_command("english_user", "help")
+        self.assertIn("bot_username@bot_password@room_name", english)
+
+    def test_key_generator_outputs_a_valid_fernet_key(self):
+        script = Path(__file__).resolve().parents[1] / "generate_key.py"
+        result = subprocess.run([sys.executable, str(script)], check=True, capture_output=True, text=True)
+        CredentialVault(result.stdout.strip())
+
+    def test_friend_acceptance_has_no_supabase_dependency_or_environment(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertNotIn("supabase", (root / "requirements.txt").read_text(encoding="utf-8").casefold())
+        self.assertNotIn("SUPABASE_", (root / ".env.example").read_text(encoding="utf-8"))
+        source = (root / "friendships.py").read_text(encoding="utf-8")
+        self.assertIn('encode_query("profile_update", type_="send_requests"', source)
+        self.assertIn('type_="accept_friend"', source)
 
 
 if __name__ == "__main__":

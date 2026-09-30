@@ -60,7 +60,6 @@ def main() -> int:
 
     # Import after the environment above has been installed.
     from control_runtime import ControlAccountBot
-    from friendships import FriendshipWatcher
 
     service = BotServerService(data_dir, state_key, admin_name)
     control = ControlAccountBot(service)
@@ -68,14 +67,13 @@ def main() -> int:
     control_thread = threading.Thread(target=control.start, name="sboot-control-account", daemon=True)
     control_thread.start()
 
-    watcher = FriendshipWatcher(control.db.client if getattr(control, "db", None) else None, server_id, control.welcome_friend, control.log)
-    def friendship_loop():
-        # Preserve requests until the central Talkin account is online, so every
-        # accepted request receives the requested language greeting.
-        while not stop.wait(max(0.25, float(os.getenv("FRIEND_POLL_SECONDS", "1")))):
-            if getattr(control, "ws", None):
-                watcher.accept_once()
     stop = threading.Event()
+    def friendship_loop():
+        # Poll Talkin's native profile_update/send_requests command; no
+        # Supabase credentials or friendship-table access are required.
+        while not stop.wait(max(2.0, float(os.getenv("FRIEND_POLL_SECONDS", "10")))):
+            if getattr(control, "ws", None):
+                control.poll_friend_requests()
     friend_thread = threading.Thread(target=friendship_loop, name="sboot-friends", daemon=True)
     friend_thread.start()
 
@@ -84,7 +82,7 @@ def main() -> int:
     httpd = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
 
     def shutdown(_signum=None, _frame=None):
-        stop.set(); watcher.stop(); service.shutdown()
+        stop.set(); service.shutdown()
         threading.Thread(target=httpd.shutdown, daemon=True).start()
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
