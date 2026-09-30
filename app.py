@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dotenv import load_dotenv
 
 from control_server import BotServerService
-from state import StateError, safe_state_root
+from state import CredentialVault, StateError, load_or_create_state_key, safe_state_root
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -35,12 +35,16 @@ def main() -> int:
     server_id = os.getenv("SERVER_BOT_ID", "").strip().lstrip("@")
     server_password = os.getenv("SERVER_BOT_PASSWORD", "")
     data_dir = safe_state_root(os.getenv("BOT_SERVER_DATA_DIR", "./data"))
-    state_key = os.getenv("STATE_ENCRYPTION_KEY", "")
+    state_key = os.getenv("STATE_ENCRYPTION_KEY", "").strip()
     admin_name = os.getenv("SERVER_ADMIN_NAME", "ۦاݪــۛـسـ𓆩♛𓆪ـۧۦـ۫ـفـيــ۫ـۧ𝁤𝆬𝃛")
     if not server_id or not server_password:
         raise SystemExit("Missing SERVER_BOT_ID or SERVER_BOT_PASSWORD")
     if not state_key:
-        raise SystemExit("Missing STATE_ENCRYPTION_KEY; generate one with: python -c 'from state import CredentialVault; print(CredentialVault.generate())'")
+        key_existed = (data_dir / ".state_encryption_key").exists()
+        state_key = load_or_create_state_key(data_dir)
+        print("Loaded persistent encryption key." if key_existed else "Created persistent encryption key on first startup.", flush=True)
+    else:
+        CredentialVault(state_key)
 
     # The central account is a private command server and must not join a room.
     # These values are read at Talkin runtime import time.

@@ -76,26 +76,21 @@
 
 ## الإعداد والنشر
 
-1. افتح **Terminal / PowerShell** في مجلد المشروع `talkin-bot-server` (المجلد الذي يحتوي `generate_key.py`).
-2. ثبّت المتطلبات ثم أنشئ مفتاح التخزين مرة واحدة:
+1. اضبط بيانات حساب السيرفر في `SERVER_BOT_ID` و`SERVER_BOT_PASSWORD`، واربط مجلد بيانات دائمًا عند `/data`.
+2. عند أول تشغيل، ينشئ التطبيق مجلد البيانات ومفتاح التشفير تلقائيًا داخل `/data/.state_encryption_key`. في التشغيلات التالية يعيد استخدام المفتاح نفسه؛ **لا تحذف مجلد `/data` ولا ملف المفتاح** حتى لا تفقد القدرة على فك كلمات مرور البوتات المخزنة.
 
-   ```bash
-   pip install -r requirements.txt
-   python3 generate_key.py
-   ```
-
-   في Windows استخدم `py generate_key.py`. سيظهر سطر طويل؛ انسخه إلى `STATE_ENCRYPTION_KEY` في أسرار الاستضافة أو ملف `.env`. **لا تغيّر المفتاح بعد إضافة بوتات** وإلا لن تتمكن الخدمة من فك كلمات المرور المحفوظة.
+   إذا حددت `STATE_ENCRYPTION_KEY` يدويًا، فسيستخدمه التطبيق بدل إنشاء الملف. تبقى أداة `generate_key.py` اختيارية لمن يريد توليد المفتاح مسبقًا.
 
 3. عيّن على الأقل:
 
    ```env
    SERVER_BOT_ID=-sbot-
    SERVER_BOT_PASSWORD=كلمة_مرور_حساب_السيرفر
-   STATE_ENCRYPTION_KEY=المفتاح_المولّد
+   # اترك STATE_ENCRYPTION_KEY غير محدد كي يتم توليده عند أول تشغيل
    BOT_SERVER_DATA_DIR=/data
    ```
 
-4. اربط مجلدًا دائمًا على `/data` ثم انشر صورة Docker:
+4. اربط مجلدًا دائمًا على `/data` ثم انشر صورة Docker. مثال التشغيل المحلي:
 
    ```bash
    docker build -t talkin-sboot .

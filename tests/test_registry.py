@@ -8,7 +8,7 @@ from control_server import BotServerService
 from control_runtime import ControlAccountBot
 from friendships import accept_friend_query, request_friendships_query, request_usernames
 from registry import BotRegistry, BotSpec, RegistryError
-from state import CredentialVault, status_value
+from state import CredentialVault, StateError, load_or_create_state_key, status_value
 from vendor.talkin_runtime import decode_message
 
 
@@ -127,6 +127,24 @@ class RegistryTests(unittest.TestCase):
         script = Path(__file__).resolve().parents[1] / "generate_key.py"
         result = subprocess.run([sys.executable, str(script)], check=True, capture_output=True, text=True)
         CredentialVault(result.stdout.strip())
+
+    def test_first_start_creates_key_once_and_reuses_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory) / "data"
+            first_key = load_or_create_state_key(data_dir)
+            key_file = data_dir / ".state_encryption_key"
+            self.assertEqual(key_file.stat().st_mode & 0o777, 0o600)
+            registry = BotRegistry(data_dir, first_key, "Admin")
+            record = registry.create(BotSpec("control", "secret", "Room", "controller", "master"))
+            second_key = load_or_create_state_key(data_dir)
+            self.assertEqual(second_key, first_key)
+            self.assertEqual(BotRegistry(data_dir, second_key, "Admin").get(record["id"], True)["password"], "secret")
+
+    def test_first_start_refuses_to_replace_a_missing_key_for_existing_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "talkin_bot_server.json").write_text("{}", encoding="utf-8")
+            with self.assertRaises(StateError):
+                load_or_create_state_key(directory)
 
     def test_friend_acceptance_has_no_supabase_dependency_or_environment(self):
         root = Path(__file__).resolve().parents[1]
