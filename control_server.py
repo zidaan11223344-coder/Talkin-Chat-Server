@@ -157,7 +157,7 @@ class BotServerService:
             if low.startswith("hb@"):
                 record = self.registry.create(self._parse_add(text[3:], "silent", sender))
                 self.start_record(record)
-                return f"✅ تمت إضافة @{record['username']} كبوت صامت لغرفة {record['room']}.\n📌 سيتم تحديث حالته إلى «بوت صامت» عند الاتصال."
+                return f"⏳ تمت إضافة طلب تشغيل @{record['username']} كبوت صامت لغرفة {record['room']}.\n📌 جاري الاتصال والتحقق من دخول البوت فعلياً؛ سأرسل للماستر تأكيداً عند نجاح الدخول أو سبب الرفض."
             if low.startswith(("بوتصامت@", "صامت@")):
                 payload = text.split("@", 1)[1]
                 record = self.registry.create(self._parse_add(payload, "silent", sender))
@@ -167,9 +167,9 @@ class BotServerService:
                 record = self.registry.create(self._parse_add(text, "controller", sender))
                 self.start_record(record)
                 return (
-                    f"✅ تمت إضافة @{record['username']} كبوت متحكم لغرفة {record['room']}.\n"
+                    f"⏳ تمت إضافة طلب تشغيل @{record['username']} كبوت متحكم لغرفة {record['room']}.\n"
                     "🛡️ الأوامر المتاحة له: الإدارة والحماية والدعوات والقوائم، ولعبة الكركيت المشتركة عند تشغيلها.\n"
-                    "📌 سيتم تطبيق الحالة الملوّنة عند اتصال البوت."
+                    "📌 جاري الاتصال والتحقق من دخول البوت فعلياً؛ سيصل للماستر تأكيد عند نجاح الدخول أو سبب الرفض."
                 )
             if low.startswith("delall@") or low.startswith("clean@"):
                 room = text.split("@", 1)[1].strip()
