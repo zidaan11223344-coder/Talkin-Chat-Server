@@ -13,6 +13,7 @@ from typing import Any
 
 from state import JsonState, normalize
 from cricket_game import CricketGame
+from cricket_renderer import render_scoreboard
 from invite_templates import InviteTemplateStore
 from room_actions import RoomActionQueue
 
@@ -149,40 +150,45 @@ class RestrictedTalkinBot(TalkinBot):
     def _help_text(self, page: int = 1) -> str:
         if int(page) == 1:
             return (
-                "📋 أوامر الإدارة — 1 | الحظر والطرد\n"
+                "📋 أوامر الإدارة — 1 | الإدارة والحظر\n"
                 "━━━━━━━━━━━━\n"
                 "k@اسم — طرد عضو\n"
                 "kick اسم — طرد عضو\n"
                 "b@اسم — حظر عضو\n"
                 "ban اسم — حظر عضو\n"
-                "bl@اسم — حظر عضو بكل غرف السيرفر\n"
                 "ub@اسم — فك الحظر\n"
                 "u@اسم — فك الحظر\n"
                 "unban اسم — فك الحظر\n"
                 "m@اسم — إعطاء عضوية\n"
+                "member اسم — إعطاء عضوية\n"
+                "a@اسم — تعيين مشرف\n"
+                "admin اسم — تعيين مشرف\n"
+                "o@اسم — تعيين أونر\n"
+                "owner اسم — تعيين أونر\n"
                 ".u — تراجع عن آخر إجراء إداري للبوت\n\n"
                 "📌 للقائمة التالية اكتب ns"
             )
         return (
-            "📋 أوامر الإدارة — 2 | الحماية والدعوات والقوائم\n"
+            "📋 أوامر الإدارة — 2 | الحماية والدعوات والقوائم والألعاب\n"
             "━━━━━━━━━━━━\n"
-            "a@اسم — تعيين مشرف | o@اسم — تعيين أونر\n"
-            "حماية — عرض إعدادات الحماية\n"
+            "🛡️ حماية — عرض إعدادات الحماية\n"
             "تشغيل الحماية / إيقاف الحماية\n"
             "+mf@كلمة / -mf@كلمة — إضافة/حذف كلمة ممنوعة\n"
-            "l@mf — الكلمات الممنوعة | mr@2 إلى mr@50 — حد التكرار\n\n"
-            "inv — دعوة الأونرات والمشرفين والأعضاء\n"
-            "invmsg@النص ({room}) — تغيير نص الدعوة مع إبقاء اسم الغرفة\n"
-            "invmsg@reset — استعادة نص الدعوة الافتراضي\n"
-            "i@اسم — دعوة مستخدم | l@inv — الدعوات المرسلة برسالة واحدة\n\n"
-            "l@m / l@a / l@o / l@b — قوائم الغرفة\n"
-            "l@mas — عرض الماسترات\n"
-            "mas@اسم — إضافة ماستر مساعد | umas@اسم — إزالته\n\n"
-            "🏏 الكركيت: .cr 1 ثم اختر 1–4 لاعبين لكل غرفة | .cr 0 إيقاف\n"
-            "كل لاعب يرسل Join؛ عند لاعب واحد اكتب bot لمواجهة بوت الغرفة المتحكم،\n"
-            "أو انتظر Join من غرفة أخرى. تختار كل غرفة 1 هجوم أو 2 دفاع.\n"
-            "الأدوار تتناوب، واللاعب المطلوب يرسل رقمًا من 0 إلى 6.\n\n"
-            "⚠️ إدارة الأوامر للماستر المسجّل فقط."
+            "l@mf — الكلمات الممنوعة | clear@mf — تنظيفها\n"
+            "mr@2 إلى mr@50 — حد التكرار\n\n"
+            "📨 inv — دعوة الأونرات والمشرفين والأعضاء\n"
+            "invmsg@النص — تغيير نص الدعوة\n"
+            "invmsg@reset — استعادة النص الافتراضي\n"
+            "i@اسم — دعوة مستخدم | l@inv — سجل الدعوات\n\n"
+            "📋 l@m / l@a / l@o / l@b / l@all — قوائم الغرفة\n"
+            "l@mas — الماسترات | mas@اسم — إضافة ماستر مساعد\n"
+            "umas@اسم — إزالة ماستر مساعد\n\n"
+            "🏏 الكركيت: .cr 1 ثم اختر 1–4 لاعبين لكل غرفة\n"
+            ".cr 0 — إيقاف | Join — انضمام | bot — ضد البوت\n"
+            "1 هجوم / 2 دفاع، ثم يرسل اللاعب دوره رقمًا من 0 إلى 6\n"
+            "💰 الجائزة: 200,000 نقطة للفريق الفائز وتُقسم بالتساوي بين لاعبيه\n"
+            "🏆 نقاط — نقاطك | نقاط@اسم — نقاط لاعب | المتصدرين — أعلى 10\n\n"
+            "📌 هذه آخر قائمة أوامر الإدارة."
         )
 
     def _send_help(self, room: str, private_to: str = "", page: int = 1) -> None:
@@ -367,6 +373,15 @@ class RestrictedTalkinBot(TalkinBot):
                 try:
                     for filename in event.get("images", []):
                         self.send_room_media(self.target_room, self._cricket_asset_url(filename), "image")
+                    scoreboard = event.get("scoreboard")
+                    if isinstance(scoreboard, dict):
+                        public_base = (os.getenv("CRICKET_PUBLIC_BASE_URL", "").strip() or os.getenv("PUBLIC_BASE_URL", "").strip()).rstrip("/")
+                        if public_base:
+                            try:
+                                media_path = render_scoreboard(scoreboard, self.registry_root / "cricket_media")
+                                self.send_room_media(self.target_room, f"{public_base}/cricket-media/{media_path.name}", "image")
+                            except Exception as exc:
+                                self.log("[CRICKET] scoreboard render/delivery failed", repr(exc))
                     if event.get("text"):
                         self.send_room_text(self.target_room, str(event["text"]))
                     self._cricket_cursor = int(event.get("id", self._cricket_cursor))
@@ -584,6 +599,39 @@ class RestrictedTalkinBot(TalkinBot):
                     self.send_room_text(room, response)
             else:
                 self._advance_restricted_list_page(room, sender)
+            return True
+        if low in {"نقاط", "points", "point", "رصيدي", "نقاطي"}:
+            value = self._cricket.points_for(sender)
+            reply = f"💰 رصيد @{str(sender).lstrip('@')}: {value:,} نقطة"
+            if getattr(self, "_command_is_private", False):
+                self.send_private_text(sender, reply)
+            else:
+                self.send_room_text(room, reply)
+            return True
+        points_user = re.fullmatch(r"(?:نقاط|points)@(.+)", str(text).strip(), re.I)
+        if points_user:
+            target = points_user.group(1).strip().lstrip("@")
+            value = self._cricket.points_for(target)
+            reply = f"💰 نقاط @{target}: {value:,}"
+            if getattr(self, "_command_is_private", False):
+                self.send_private_text(sender, reply)
+            else:
+                self.send_room_text(room, reply)
+            return True
+        if low in {"المتصدرين", "المتصدرون", "top", "leaderboard", "ترتيب"}:
+            rows = self._cricket.leaderboard(10)
+            if rows:
+                body = "\n".join(
+                    f"{index}. @{name} — {points:,} نقطة 🏆 {wins} فوز"
+                    for index, (name, points, wins) in enumerate(rows, 1)
+                )
+            else:
+                body = "📭 لا توجد نقاط مسجلة بعد."
+            reply = "🏆 المتصدرين في الكركيت\n━━━━━━━━━━━━\n" + body
+            if getattr(self, "_command_is_private", False):
+                self.send_private_text(sender, reply)
+            else:
+                self.send_room_text(room, reply)
             return True
         if not self._is_master(sender):
             # Prevent non-masters from probing any control command.

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import mimetypes
+from pathlib import Path
 import signal
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,9 +17,32 @@ from state import CredentialVault, StateError, load_or_create_state_key, safe_st
 
 class HealthHandler(BaseHTTPRequestHandler):
     service: BotServerService | None = None
+    media_root: Path | None = None
 
     def do_GET(self):  # noqa: N802
-        if self.path.rstrip("/") not in {"", "/health", "/status"}:
+        path = self.path.split("?", 1)[0]
+        if path.startswith("/cricket-media/"):
+            root = self.media_root
+            if root is None:
+                self.send_response(404); self.end_headers(); return
+            name = Path(path.removeprefix("/cricket-media/")).name
+            if not name or name != Path(path.removeprefix("/cricket-media/")).as_posix() or not name.lower().endswith(".png"):
+                self.send_response(404); self.end_headers(); return
+            file_path = (root / name).resolve()
+            try:
+                if file_path.parent != root.resolve() or not file_path.is_file():
+                    raise FileNotFoundError
+                payload = file_path.read_bytes()
+            except (OSError, FileNotFoundError):
+                self.send_response(404); self.end_headers(); return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if path.rstrip("/") not in {"", "/health", "/status"}:
             self.send_response(404); self.end_headers(); return
         payload = json.dumps((self.service.health() if self.service else {"status": "starting"}), ensure_ascii=False).encode("utf-8")
         self.send_response(200)
@@ -82,6 +107,8 @@ def main() -> int:
     friend_thread.start()
 
     HealthHandler.service = service
+    HealthHandler.media_root = data_dir / "cricket_media"
+    HealthHandler.media_root.mkdir(parents=True, exist_ok=True)
     port = int(os.getenv("PORT", os.getenv("API_PORT", "8080")))
     httpd = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
 
