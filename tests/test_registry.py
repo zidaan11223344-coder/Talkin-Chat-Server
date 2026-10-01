@@ -95,9 +95,10 @@ class RegistryTests(unittest.TestCase):
     def test_help_contains_requested_paged_moderation_commands(self):
         source = Path(__file__).resolve().parents[1] / "restricted_runtime.py"
         runtime_text = source.read_text(encoding="utf-8")
-        for text in ("📋 أوامر الإدارة — 1 | الحظر والطرد", "bl@اسم", "ub@اسم", "m@اسم", "📌 للقائمة التالية اكتب ns"):
+        for text in ("📋 أوامر الإدارة — 1 | الإدارة والحظر", "ub@اسم", "m@اسم", "a@اسم", "o@اسم", "📌 للقائمة التالية اكتب ns"):
             self.assertIn(text, runtime_text)
         self.assertIn("def _advance_restricted_list_page", runtime_text)
+        self.assertNotIn("bl@اسم — حظر عضو بكل غرف السيرفر", runtime_text)
 
     def test_restricted_admin_aliases_and_nonmaster_help_dispatch(self):
         bot = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
@@ -220,7 +221,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(game.current()["innings"], 2)
         room_events = game.events_after("Room A", 0)
         images = [image for event in room_events for image in event["images"]]
-        self.assertIn("cricket_ball_1.png", images)
+        self.assertIn("cricket_number_1.png", images)
         self.assertIn("cricket_duck.png", images)
         self.assertIn("cricket_hattrick.png", images)
         self.assertIsNone(game.submit_ball("Room B", "b1", 2))
@@ -277,13 +278,33 @@ class RegistryTests(unittest.TestCase):
 
     def test_all_cricket_images_are_transparent_and_under_100_kb(self):
         root = Path(__file__).resolve().parents[1] / "vendor" / "assets"
-        expected = [*(f"cricket_ball_{i}.png" for i in range(1, 7)), "cricket_duck.png", "cricket_hattrick.png"]
+        expected = [*(f"cricket_number_{i}.png" for i in range(7)), "cricket_duck.png", "cricket_hattrick.png"]
         for name in expected:
             path = root / name
             self.assertTrue(path.is_file(), name)
             self.assertLess(path.stat().st_size, 100_000, name)
             header = path.read_bytes()[:26]
             self.assertEqual(header[25], 6, f"{name} must be a true RGBA PNG")
+
+    def test_cricket_awards_200k_equally_to_winning_players_and_persists_points(self):
+        game = CricketGame(self.temp.name)
+        game.set_enabled("Room A", True)
+        self.assertIsNone(game.start("Room A", 2))
+        for user in ("alpha", "beta"):
+            self.assertIsNone(game.join("Room A", user))
+        for user in ("gamma", "delta"):
+            self.assertIsNone(game.join("Room B", user))
+        self.assertIsNone(game.choose_team("Room A", "attack"))
+        self.assertIsNone(game.choose_team("Room B", "defense"))
+        data = game.state.load()
+        match = data["match"]
+        match["scores"] = {"attack": 10, "defense": 2}
+        match["teams"] = {"room a": "attack", "room b": "defense"}
+        game._finish(data, match, game._participants(match))
+        game.state.save(data)
+        self.assertEqual(game.points_for("alpha"), 100000)
+        self.assertEqual(game.points_for("beta"), 100000)
+        self.assertEqual(sum(row[1] for row in game.leaderboard(10)), 200000)
 
     @staticmethod
     def _query_fields(packet):
