@@ -3,11 +3,16 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from control_server import BotServerService
 from control_runtime import ControlAccountBot
+from cricket_game import CricketGame
 from friendships import accept_friend_query, request_friendships_query, request_usernames
+from invite_templates import InviteTemplateStore
 from registry import BotRegistry, BotSpec, RegistryError
+from room_actions import RoomActionQueue
+from restricted_runtime import RestrictedTalkinBot
 from state import CredentialVault, StateError, load_or_create_state_key, status_value
 from vendor.talkin_runtime import decode_message
 
@@ -60,15 +65,127 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("#60A5FA", app_text)
         self.assertNotIn("#FFD166'>Bot Entry Server", app_text)
 
-    def test_invitation_flow_avoids_the_stale_owner_list_gate(self):
+    def test_invitation_flow_finishes_all_room_lists_before_sending(self):
         source = Path(__file__).resolve().parents[1] / "restricted_runtime.py"
         runtime_text = source.read_text(encoding="utf-8")
         start = runtime_text.index("    def _start_invites")
         end = runtime_text.index("    def _handle_invitation_roster", start)
         invite_method = runtime_text[start:end]
-        self.assertIn("_settings_room_users", invite_method)
-        self.assertIn("occupants_list", invite_method)
+        self.assertIn("request_occupants", invite_method)
+        self.assertIn("response_to=requester", invite_method)
         self.assertNotIn("_bot_is_room_owner", invite_method)
+        process_start = runtime_text.index("    def _process_message", end)
+        process_end = runtime_text.index("    def start", process_start)
+        process_method = runtime_text[process_start:process_end]
+        self.assertLess(process_method.index("_complete_pending_room_list(result)"),
+                        process_method.index("process_occupants_for_invite(result)"))
+
+    def test_help_contains_requested_paged_moderation_commands(self):
+        source = Path(__file__).resolve().parents[1] / "restricted_runtime.py"
+        runtime_text = source.read_text(encoding="utf-8")
+        for text in ("📋 أوامر الإدارة — 1 | الحظر والطرد", "bl@اسم", "ub@اسم", "m@اسم", "📌 للقائمة التالية اكتب ns"):
+            self.assertIn(text, runtime_text)
+        self.assertIn("def _advance_restricted_list_page", runtime_text)
+
+    def test_restricted_admin_aliases_and_nonmaster_help_dispatch(self):
+        bot = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
+        bot.role = "controller"
+        bot.target_room = "Room A"
+        bot._is_own_room = lambda room: room == "Room A"
+        bot._is_master = lambda _sender: True
+        bot._cricket = type("Game", (), {"current": lambda self: None})()
+        bot._help_page_by_sender = {}
+        bot._command_is_private = False
+        bot._handle_protection_command = lambda *_args: False
+        calls = []
+        bot._moderate = lambda room, target, action: calls.append((target, action))
+        bot._undo_last_bot_action = lambda sender: calls.append((sender, "undo"))
+        for command in ("m@Alice", "ub@Bob", "kick Carol", "unban Dana", ".u"):
+            self.assertTrue(bot._handle_controller_command("Room A", "master", command))
+        self.assertEqual(calls, [
+            ("Alice", "grant_member"), ("Bob", "member"), ("Carol", "kick"),
+            ("Dana", "member"), ("master", "undo"),
+        ])
+        bot._is_master = lambda _sender: False
+        help_calls = []
+        bot._send_help = lambda room, private_to="", page=1: help_calls.append((room, private_to, page))
+        self.assertTrue(bot._handle_controller_command("Room A", "guest", "help"))
+        self.assertEqual(help_calls, [("Room A", "", 1)])
+
+    def test_ns_advances_private_result_page_using_room_and_sender_key(self):
+        bot = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
+        bot._result_pages = {
+            ("chat_message", "Room A", "master"): {"pages": ["first", "second"], "part": 1}
+        }
+        bot._command_is_private = True
+        sent = []
+        bot.send_private_text = lambda sender, text: sent.append((sender, text))
+        self.assertTrue(bot._advance_restricted_list_page("Room A", "master"))
+        self.assertEqual(sent, [("master", "second\n\n✅ انتهت القوائم.")])
+
+    def test_private_invite_history_is_one_bounded_message(self):
+        bot = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
+        bot.sent_invites = lambda _room: [f"user{i}" for i in range(200)]
+        sent = []
+        bot.send_private_text = lambda username, text: sent.append((username, text))
+        bot.send_room_text = lambda *_args: self.fail("private history must not post to the room")
+        with patch.dict("os.environ", {"WS_MAX_MESSAGE_BYTES": "1008"}):
+            bot._send_invite_history("Room A", private_to="master")
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], "master")
+        self.assertIn("الإجمالي 200", sent[0][1])
+
+    def test_invitation_template_keeps_a_room_placeholder_and_persists(self):
+        store = InviteTemplateStore(self.temp.name)
+        saved = store.set("Room A", "أهلًا، انضم إلينا")
+        self.assertEqual(saved, "أهلًا، انضم إلينا ({room})")
+        self.assertEqual(store.render("Room A", "friend", "master"), "أهلًا، انضم إلينا (Room A)")
+        self.assertEqual(store.get("room a"), saved)
+        store.reset("ROOM A")
+        self.assertEqual(store.get("Room A"), "يوجد معجب مخفي في ({room})")
+        self.assertEqual(store.ensure_room("Welcome {room}"), "Welcome ({room})")
+
+    def test_all_room_ban_queue_is_persistent_and_deduplicates_rooms(self):
+        queue = RoomActionQueue(self.temp.name)
+        action_id, count = queue.enqueue("bad_user", ["Room A", "room a", "Room B"], "master")
+        self.assertEqual(count, 2)
+        self.assertEqual(len(queue.pending_for_room("ROOM A")), 1)
+        queue.mark_done(action_id, "Room A")
+        self.assertEqual(queue.pending_for_room("room a"), [])
+        self.assertEqual(len(queue.pending_for_room("Room B")), 1)
+
+    def test_cross_room_cricket_duck_hattrick_and_image_events(self):
+        game = CricketGame(self.temp.name)
+        game.set_enabled("Room A", True)
+        self.assertTrue(game.enabled("Room B"))
+        self.assertIsNone(game.start("Room A", 2))
+        self.assertIsNone(game.join("Room B"))
+        self.assertIsNone(game.choose_team("Room A", "attack"))
+        self.assertIsNone(game.choose_team("Room B", "defense"))
+        for number in (1, 2, 3):
+            self.assertIsNone(game.submit_ball("Room A", "batter", number))
+            self.assertIsNone(game.submit_ball("Room B", "bowler", number))
+        state = game.current()
+        self.assertEqual(state["innings"], 2)
+        room_events = game.events_after("Room A", 0)
+        images = [image for event in room_events for image in event["images"]]
+        self.assertIn("cricket_duck.png", images)
+        self.assertIn("cricket_hattrick.png", images)
+        self.assertIsNone(game.submit_ball("Room B", "batter", 2))
+        self.assertIsNone(game.submit_ball("Room A", "bowler", 1))
+        self.assertIsNone(game.current())
+        game.set_enabled("Room B", False)
+        self.assertFalse(game.enabled("Room A"))
+
+    def test_all_cricket_images_are_transparent_and_under_100_kb(self):
+        root = Path(__file__).resolve().parents[1] / "vendor" / "assets"
+        expected = [*(f"cricket_ball_{i}.png" for i in range(1, 7)), "cricket_duck.png", "cricket_hattrick.png"]
+        for name in expected:
+            path = root / name
+            self.assertTrue(path.is_file(), name)
+            self.assertLess(path.stat().st_size, 100_000, name)
+            header = path.read_bytes()[:26]
+            self.assertEqual(header[25], 6, f"{name} must be a true RGBA PNG")
 
     @staticmethod
     def _query_fields(packet):

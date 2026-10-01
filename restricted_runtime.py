@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import secrets
 import sys
 import threading
 import time
@@ -13,12 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from state import JsonState, normalize
+from cricket_game import CricketGame
+from invite_templates import InviteTemplateStore
+from room_actions import RoomActionQueue
 
 # Child environment is populated by runner.py before this module is imported.
 from vendor.talkin_runtime import (  # noqa: E402
     BOT_ID,
     BOT_MASTER,
-    ASSETS_DIR,
     TalkinBot,
     _norm_room,
     _norm_user,
@@ -42,10 +43,15 @@ class RestrictedTalkinBot(TalkinBot):
         )
         self._flood = defaultdict(lambda: {"sender": "", "body": "", "sender_count": 0, "body_count": 0, "at": 0.0})
         super().__init__()
-        # The inherited runtime has invitation support, but no unrequested
-        # games/media/publication commands are dispatched by this subclass.
         self.invites_enabled = True
-        self._cricket_games = {}
+        self._invite_templates = InviteTemplateStore(self.registry_root)
+        self._room_actions = RoomActionQueue(self.registry_root)
+        self._room_action_lock = threading.Lock()
+        self._cricket = CricketGame(self.registry_root)
+        self._cricket_cursor = self._cricket.latest_event_id(self.target_room)
+        self._cricket_delivery_lock = threading.Lock()
+        self._shared_worker_stop = threading.Event()
+        self._help_page_by_sender: dict[str, int] = {}
 
     def _is_master(self, username: str) -> bool:
         return bool(normalize(username) and normalize(username) == normalize(self.master))
@@ -140,46 +146,92 @@ class RestrictedTalkinBot(TalkinBot):
             return dict(item)
         return self._protection_state.mutate(update)
 
-    def _help_text(self) -> str:
+    def _help_text(self, page: int = 1) -> str:
+        if int(page) == 1:
+            return (
+                "📋 أوامر الإدارة — 1 | الحظر والطرد\n"
+                "━━━━━━━━━━━━\n"
+                "k@اسم — طرد عضو\n"
+                "kick اسم — طرد عضو\n"
+                "b@اسم — حظر عضو\n"
+                "ban اسم — حظر عضو\n"
+                "bl@اسم — حظر عضو بكل غرف السيرفر\n"
+                "ub@اسم — فك الحظر\n"
+                "u@اسم — فك الحظر\n"
+                "unban اسم — فك الحظر\n"
+                "m@اسم — إعطاء عضوية\n"
+                ".u — تراجع عن آخر إجراء إداري للبوت\n\n"
+                "📌 للقائمة التالية اكتب ns"
+            )
         return (
-            "🛡️ أوامر بوت التحكم S-Boot\n\n"
-            "【 الإدارة 】\n"
-            "a@اسم — إضافة مشرف\n"
-            "o@اسم — إضافة أونر\n"
-            "b@اسم — حظر\n"
-            "u@اسم — فك الحظر\n"
-            "k@اسم — طرد\n\n"
-            "m@اسم — إعطاء عضوية\n\n"
-            "【 الحماية 】\n"
+            "📋 أوامر الإدارة — 2 | الحماية والدعوات والقوائم\n"
+            "━━━━━━━━━━━━\n"
+            "a@اسم — تعيين مشرف | o@اسم — تعيين أونر\n"
             "حماية — عرض إعدادات الحماية\n"
             "تشغيل الحماية / إيقاف الحماية\n"
-            "+mf@كلمة — إضافة كلمة ممنوعة\n"
-            "-mf@كلمة — حذف كلمة ممنوعة\n"
-            "l@mf — عرض الكلمات | clear@mf — تنظيفها\n"
-            "mr@2 إلى mr@50 — تحديد حد التكرار\n\n"
-            "【 الدعوات 】\n"
-            "inv — جمع الأونرات والمشرفين والأعضاء وإرسال الدعوات\n"
-            "i@اسم — إرسال دعوة خاصة إلى مستخدم واحد\n\n"
-            "【 القوائم 】\n"
-            "l@m — الأعضاء | l@a — المشرفون\n"
-            "l@o — الأونرات | l@b — المحظورون\n"
-            "l@all — عرض القوائم كلها\n"
+            "+mf@كلمة / -mf@كلمة — إضافة/حذف كلمة ممنوعة\n"
+            "l@mf — الكلمات الممنوعة | mr@2 إلى mr@50 — حد التكرار\n\n"
+            "inv — دعوة الأونرات والمشرفين والأعضاء\n"
+            "invmsg@النص ({room}) — تغيير نص الدعوة مع إبقاء اسم الغرفة\n"
+            "invmsg@reset — استعادة نص الدعوة الافتراضي\n"
+            "i@اسم — دعوة مستخدم | l@inv — الدعوات المرسلة برسالة واحدة\n\n"
+            "l@m / l@a / l@o / l@b — قوائم الغرفة\n"
             "l@mas — عرض الماسترات\n"
-            "l@inv — عرض الدعوات المرسلة في رسالة واحدة\n\n"
-            "【 الألعاب 】\n"
-            "كركيت — لعبة لأعضاء الغرفة: اختر 1–4 لاعبين، هجوم/دفاع، 6 كرات، وهاتريك\n\n"
-            "【 الماسترات 】\n"
-            "mas@اسم_المستخدم — إضافة ماستر مساعد\n"
-            "umas@اسم_المستخدم — إزالة ماستر مساعد\n\n"
-            "⚠️ الأوامر للماستر المسجّل فقط داخل الغرفة."
+            "mas@اسم — إضافة ماستر مساعد | umas@اسم — إزالته\n\n"
+            "🏏 الكركيت: .cr 1 تشغيل | .cr 0 إيقاف\n"
+            "كركيت 2 — مباراة تنتظر غرفتين | join — انضمام\n"
+            "1 هجوم / 2 دفاع؛ بعد البداية يلعب الفريقان بالأرقام 0–6\n\n"
+            "⚠️ إدارة الأوامر للماستر المسجّل فقط."
         )
 
-    def _send_help(self, room: str, private_to: str = "") -> None:
-        text = self._help_text()
+    def _send_help(self, room: str, private_to: str = "", page: int = 1) -> None:
+        text = self._help_text(page)
         if private_to:
             self.send_private_text(private_to, text)
         else:
             self.send_room_text(room, text)
+
+    def _advance_restricted_list_page(self, room: str, sender: str) -> bool:
+        pages = getattr(self, "_result_pages", {})
+        if not isinstance(pages, dict):
+            return False
+        candidates = [
+            (("room_message", str(room or ""), str(sender or "")), "room"),
+            (("chat_message", str(room or ""), str(sender or "")), "private"),
+        ]
+        if not pages.get(candidates[1][0]):
+            for candidate_key, candidate_state in reversed(list(pages.items())):
+                if len(candidate_key) >= 3 and candidate_key[0] == "chat_message" and candidate_key[2] == str(sender or ""):
+                    candidates.append((candidate_key, "private"))
+                    break
+        for key, destination in candidates:
+            state = pages.get(key)
+            if not isinstance(state, dict):
+                continue
+            entries = state.get("pages") or []
+            index = int(state.get("part", 1) or 1)
+            if index >= len(entries):
+                continue
+            index += 1
+            state["part"] = index
+            body = str(entries[index - 1])
+            if index < len(entries):
+                body += "\n\n📌 للقائمة التالية اكتب ns"
+            else:
+                body += "\n\n✅ انتهت القوائم."
+            if destination == "private":
+                self.send_private_text(sender, body)
+            elif getattr(self, "_command_is_private", False):
+                self.send_private_text(sender, body)
+            else:
+                self.send_room_text(room, body)
+            return True
+        response = "📌 لا توجد قائمة إضافية. أرسل help لعرض قائمة الأوامر."
+        if getattr(self, "_command_is_private", False):
+            self.send_private_text(sender, response)
+        else:
+            self.send_room_text(room, response)
+        return False
 
     def _send_protection_menu(self, room: str) -> None:
         cfg = self._security(room)
@@ -205,87 +257,174 @@ class RestrictedTalkinBot(TalkinBot):
             self.send_room_text(room, "❌ لا يمكن للبوت تنفيذ الإجراء على نفسه.")
             return
         try:
-            self.request_admin_action(room, target, operation, self.master, announce_room=True)
+            grant_membership = operation == "grant_member"
+            native_operation = "member" if grant_membership else operation
+            sent = self.request_admin_action(room, target, native_operation, self.master, announce_room=True)
+            if grant_membership and sent:
+                key = (room.casefold(), target.casefold(), "member")
+                with self.pending_admin_lock:
+                    pending = self.pending_admin_actions.get(key)
+                    if pending is not None:
+                        pending["membership_grant"] = True
+                self.send_room_text(room, f"⏳ تم إرسال طلب منح العضوية إلى @{target}.")
+            elif not sent:
+                self.send_room_text(room, "❌ تعذر إرسال أمر الإدارة إلى Talkin.")
         except Exception as exc:
             self.log("[S-BOOT] moderation failed", repr(exc))
             self.send_room_text(room, "❌ تعذر إرسال أمر الإدارة إلى Talkin.")
 
-    def _cricket_game(self, room: str, sender: str, text: str) -> bool:
-        """Interactive room cricket: choose players, then attack/defense."""
-        key = _norm_room(room)
-        low = str(text or "").strip().casefold()
-        game = self._cricket_games.get(key)
-        if low in {"كركيت", "كريكت", "cricket"} and not game:
-            self._cricket_games[key] = {"players": [sender], "max": 0, "choices": {}}
-            self.send_room_text(room, "🏏 بدأت لعبة كركيت في الغرفة.\n👥 اكتب 1 أو 2 أو 3 أو 4 لاختيار عدد اللاعبين، ثم اكتب انضمام.")
-            return True
-        if not game:
-            return False
-        if low in {"كركيت", "كريكت", "cricket"}:
-            self.send_room_text(room, "🏏 توجد لعبة كركيت قائمة. اكتب انضمام أو اختر العدد أولاً.")
-            return True
-        if low in {"1", "2", "3", "4"} and not game["max"] and _norm_user(sender) == _norm_user(game["players"][0]):
-            game["max"] = int(low)
-            if game["max"] == 1:
-                game["players"].append("🤖 خصم")
-                game["choices"] = {sender: "هجوم", "🤖 خصم": "دفاع"}
-                return self._finish_cricket(room, game)
-            self.send_room_text(room, f"✅ عدد اللاعبين: {low}. اكتب انضمام للمشاركة.")
-            return True
-        if low in {"انضمام", "join"} and game["max"]:
-            if len(game["players"]) < game["max"] and _norm_user(sender) not in {_norm_user(x) for x in game["players"]}:
-                game["players"].append(sender)
-                remaining = game["max"] - len(game["players"])
-                self.send_room_text(room, "✅ انضممت للعبة." + (f" باقي {remaining} لاعب." if remaining else "\n🎯 اكتمل العدد؛ اختر هجوم أو دفاع."))
-            return True
-        if low in {"هجوم", "دفاع", "attack", "defense"} and game["max"] and len(game["players"]) >= game["max"]:
-            choice = "هجوم" if low in {"هجوم", "attack"} else "دفاع"
-            game["choices"][sender] = choice
-            if len(game["choices"]) >= len(game["players"]):
-                if len({game["choices"].get(p) for p in game["players"]}) < 2:
-                    self.send_room_text(room, "⚠️ يجب أن يوجد لاعب في الهجوم ولاعب في الدفاع.")
-                    return True
-                return self._finish_cricket(room, game)
-            self.send_room_text(room, f"✅ تم اختيار {choice}. بانتظار بقية اللاعبين.")
-            return True
-        return True
+    def _invite_message_for_room(self, room: str) -> str:
+        fallback = getattr(self, "invite_message_template", "يوجد معجب مخفي في ({room})")
+        return self._invite_templates.ensure_room(self._invite_templates.get(room, fallback))
 
-    def _finish_cricket(self, room: str, game: dict) -> bool:
-        attack = [p for p in game["players"] if game["choices"].get(p) == "هجوم"]
-        defense = [p for p in game["players"] if game["choices"].get(p) == "دفاع"]
-        score = wickets = streak = 0
-        hat_trick = False
-        duck_out = False
-        balls = []
-        for number in range(1, 7):
-            attacker, defender = attack[(number - 1) % len(attack)], defense[(number - 1) % len(defense)]
-            if secrets.randbelow(6) == 0:
-                wickets += 1; streak += 1; outcome = "ويكيت"; hat_trick = hat_trick or streak >= 3
-                if number == 1:
-                    duck_out = True
-                    outcome = "دَك — خروج من أول كرة"
+    def _managed_controller_rooms(self) -> list[str]:
+        from registry import BotRegistry
+        registry = BotRegistry(self.registry_root, os.environ["STATE_ENCRYPTION_KEY"], os.getenv("SERVER_ADMIN_NAME", ""))
+        rooms = {
+            str(item.get("room") or "").strip()
+            for item in registry.all()
+            if isinstance(item, dict) and registry._active(item)
+            and str(item.get("role") or "").casefold() == "controller"
+            and str(item.get("room") or "").strip()
+        }
+        if self.target_room:
+            rooms.add(self.target_room)
+        return sorted(rooms, key=normalize)
+
+    def _process_room_actions(self) -> None:
+        if self.role != "controller" or not self.target_room or not self._room_action_lock.acquire(blocking=False):
+            return
+        try:
+            for action in self._room_actions.pending_for_room(self.target_room):
+                try:
+                    sent = self.request_admin_action(
+                        self.target_room,
+                        str(action.get("target") or ""),
+                        str(action.get("operation") or "ban"),
+                        self.master,
+                        announce_room=True,
+                    )
+                    if sent:
+                        self._room_actions.mark_done(int(action["id"]), self.target_room)
+                    else:
+                        self._room_actions.defer(int(action["id"]), self.target_room)
+                except Exception as exc:
+                    self.log("[S-BOOT] shared room action failed", repr(exc))
+                    self._room_actions.defer(int(action["id"]), self.target_room)
+        finally:
+            self._room_action_lock.release()
+
+    def _send_invite_history(self, room: str, private_to: str = "") -> None:
+        names = self.sent_invites(room)
+        is_private = bool(private_to)
+        query_type = "chat_message" if is_private else "room_message"
+
+        def send(text: str) -> None:
+            if is_private:
+                self.send_private_text(private_to, text)
             else:
-                streak = 0; runs = secrets.randbelow(7); score += runs; outcome = f"{runs} رنز"
-            balls.append(f"{number}. @{attacker} ضد @{defender}: {outcome}")
-        defense_score = wickets * 2
-        winner = "الهجوم" if score > defense_score else "الدفاع" if defense_score > score else "تعادل"
-        self.send_room_text(room, "🏏 نتيجة لعبة كركيت\n━━━━━━━━━━━━\n" + "\n".join(balls) +
-                             f"\n\n⚔️ نقاط الهجوم: {score}\n🛡️ نقاط الدفاع: {defense_score}\n🏆 الفائز: فريق {winner}\n🔥 هاتريك: {'نعم — 3 ويكيت متتالية' if hat_trick else 'لا'}" +
-                             ("\n🦆 دَك! خرج اللاعب من أول كرة." if duck_out else ""))
-        if duck_out:
-            try:
-                duck_url = self._game_public_image(ASSETS_DIR / "cricket_duck.png", route="assets")
-                if duck_url:
-                    self.send_room_media(room, duck_url, "image")
-            except Exception as exc:
-                self.log("[CRICKET] duck image failed", repr(exc))
-        self._cricket_games.pop(_norm_room(room), None)
-        return True
+                self.send_room_text(room, text)
+
+        def encoded_size(text: str) -> int:
+            kwargs = {"type_": "text", "body": text}
+            kwargs["to" if is_private else "room"] = private_to if is_private else room
+            return len(encode_query(query_type, **kwargs))
+
+        if not names:
+            send("📨 الدعوات المرسلة\n━━━━━━━━━━━━\n📭 لا توجد دعوات مسجلة لهذه الغرفة.")
+            return
+        limit = max(240, int(os.getenv("WS_MAX_MESSAGE_BYTES", "1008")))
+        header = f"📨 الدعوات المرسلة ({len(names)})\n━━━━━━━━━━━━\n"
+        shown: list[str] = []
+        for name in names:
+            candidate = header + "، ".join("@" + item for item in shown + [name])
+            if encoded_size(candidate) > limit - 48:
+                break
+            shown.append(name)
+        omitted = len(names) - len(shown)
+        text = header + "، ".join("@" + name for name in shown)
+        if omitted:
+            text += f"\n… وبقية الأسماء: {omitted} (الإجمالي {len(names)}) لضيق حد رسالة Talkin."
+            while shown and encoded_size(text) > limit:
+                shown.pop()
+                omitted = len(names) - len(shown)
+                text = header + "، ".join("@" + name for name in shown)
+                text += f"\n… وبقية الأسماء: {omitted} (الإجمالي {len(names)}) لضيق حد رسالة Talkin."
+        send(text)
+
+    def _cricket_asset_url(self, filename: str) -> str:
+        base = (os.getenv("CRICKET_ASSET_BASE_URL", "").strip()
+                or "https://raw.githubusercontent.com/zidaan11223344-coder/Talkin-Chat-Server/main/vendor/assets").rstrip("/")
+        return f"{base}/{filename}"
+
+    def _deliver_cricket_events(self) -> None:
+        if self.role != "controller" or not self.target_room or not self._cricket_delivery_lock.acquire(blocking=False):
+            return
+        try:
+            events = self._cricket.events_after(self.target_room, self._cricket_cursor)
+            for event in events:
+                try:
+                    for filename in event.get("images", []):
+                        self.send_room_media(self.target_room, self._cricket_asset_url(filename), "image")
+                    if event.get("text"):
+                        self.send_room_text(self.target_room, str(event["text"]))
+                    self._cricket_cursor = int(event.get("id", self._cricket_cursor))
+                except Exception as exc:
+                    self.log("[CRICKET] event delivery failed", repr(exc))
+                    break
+        finally:
+            self._cricket_delivery_lock.release()
+
+    def _cricket_game(self, room: str, sender: str, text: str) -> bool:
+        """Route game/lobby commands to the shared cross-controller match."""
+        low = str(text or "").strip().casefold().translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+        toggle = re.fullmatch(r"\.?cr\s*([01])", low)
+        if toggle:
+            if not self._is_master(sender):
+                self.send_room_text(room, "🔒 تشغيل وإيقاف الكركيت للماستر فقط.")
+                return True
+            self.send_room_text(room, self._cricket.set_enabled(room, toggle.group(1) == "1"))
+            self._deliver_cricket_events()
+            return True
+        start = re.fullmatch(r"(?:\.?cricket|كركيت|كريكت)\s+([2-8])", low)
+        if start:
+            error = self._cricket.start(room, int(start.group(1)))
+            if error:
+                self.send_room_text(room, error)
+            self._deliver_cricket_events()
+            return True
+        if low in {"join", "انضمام"}:
+            error = self._cricket.join(room)
+            if error:
+                self.send_room_text(room, error)
+            self._deliver_cricket_events()
+            return True
+        match = self._cricket.current()
+        if low in {"كركيت", "كريكت", "cricket", ".cricket"}:
+            if match:
+                self.send_room_text(room, f"🏏 مباراة الكركيت الحالية: {match.get('stage')} — الغرف {len(match.get('rooms', []))}/{match.get('target_rooms', 0)}.")
+            else:
+                self.send_room_text(room, "🏏 شغّل اللعبة بـ .cr 1 ثم ابدأ: كركيت 2. الغرف الأخرى تنضم بكتابة join.")
+            return True
+        if isinstance(match, dict) and match.get("stage") == "teams" and low in {"1", "2", "هجوم", "دفاع", "attack", "defense"}:
+            team = "attack" if low in {"1", "هجوم", "attack"} else "defense"
+            error = self._cricket.choose_team(room, team)
+            if error:
+                self.send_room_text(room, error)
+            self._deliver_cricket_events()
+            return True
+        if isinstance(match, dict) and match.get("stage") == "live" and re.fullmatch(r"[0-6]", low):
+            error = self._cricket.submit_ball(room, sender, int(low))
+            if error:
+                self.send_room_text(room, error)
+            self._deliver_cricket_events()
+            return True
+        return False
 
     def _start_invites(self, room: str, requester: str) -> None:
         """Collect the same live room categories used by the list commands."""
         try:
-            self.request_occupants(room=room, response_room=room)
+            self.request_occupants(room=room, response_room=room, response_to=requester)
         except Exception as exc:
             self.log("[S-BOOT] invitation roster failed", repr(exc))
             self.send_room_text(room, "❌ تعذر جمع قوائم الغرفة للدعوات.")
@@ -379,20 +518,64 @@ class RestrictedTalkinBot(TalkinBot):
         low = str(text or "").strip().casefold()
         if not low:
             return False
-        if low in {"كركيت", "كريكت", "cricket", "join", "انضمام", "هجوم", "دفاع", "attack", "defense", "1", "2", "3", "4"}:
+        match_state = self._cricket.current()
+        game_command = bool(
+            re.fullmatch(r"\.?cr\s*[01٠١]", low)
+            or re.fullmatch(r"(?:\.?cricket|كركيت|كريكت)(?:\s+[0-9٠-٩]+)?", low)
+            or low in {"join", "انضمام"}
+            or (isinstance(match_state, dict) and (
+                (match_state.get("stage") == "teams" and low in {"1", "2", "هجوم", "دفاع", "attack", "defense"})
+                or (match_state.get("stage") == "live" and re.fullmatch(r"[0-6٠-٦]", low))
+            ))
+        )
+        if game_command:
             return self._cricket_game(room, sender, text)
+        if low in {"help", "مساعدة", "الاوامر", "الأوامر"}:
+            self._help_page_by_sender[_norm_user(sender)] = 1
+            self._send_help(room, private_to=sender if getattr(self, "_command_is_private", False) else "", page=1)
+            return True
+        if low == "ns":
+            user_key = _norm_user(sender)
+            current_page = int(self._help_page_by_sender.get(user_key, 0) or 0)
+            if current_page == 1:
+                self._help_page_by_sender[user_key] = 2
+                self._send_help(room, private_to=sender if getattr(self, "_command_is_private", False) else "", page=2)
+            elif current_page == 2:
+                response = "📌 وصلت إلى آخر قائمة الأوامر. أرسل help لعرض الصفحة الأولى."
+                if getattr(self, "_command_is_private", False):
+                    self.send_private_text(sender, response)
+                else:
+                    self.send_room_text(room, response)
+            else:
+                self._advance_restricted_list_page(room, sender)
+            return True
         if not self._is_master(sender):
             # Prevent non-masters from probing any control command.
-            return low.startswith(("a@", "o@", "b@", "u@", "k@", "حماية", "حمايه", "inv", "i@", "l@", "mas@", "umas@", "master@", "delmaster@", "+mf@", "-mf@", "mf@", "mr@"))
-        if low in {"help", "مساعدة", "الاوامر", "الأوامر"}:
-            # Help is always private, even when the command was sent in a room.
-            self._send_help(room, private_to=sender)
-            return True
+            return low.startswith(("a@", "o@", "b@", "bl@", "u@", "ub@", "k@", "m@", ".u", "حماية", "حمايه", "inv", "i@", "l@", "mas@", "umas@", "master@", "delmaster@", "+mf@", "-mf@", "mf@", "mr@"))
         if self._handle_protection_command(room, text):
             return True
-        short = re.fullmatch(r"(a|o|b|u|k|m)@(.+)", str(text).strip(), re.I)
+        if low in {".u", "undo"}:
+            self._undo_last_bot_action(sender)
+            return True
+        global_ban = re.fullmatch(r"bl@(.+)", str(text).strip(), re.I)
+        if global_ban:
+            target = global_ban.group(1).strip().lstrip("@")
+            try:
+                action_id, room_count = self._room_actions.enqueue(
+                    target, self._managed_controller_rooms(), sender, operation="ban"
+                )
+                reply = f"✅ حُفظ طلب حظر @{target} في {room_count} غرفة. رقم العملية: {action_id}."
+            except Exception as exc:
+                reply = f"❌ تعذر إنشاء الحظر الشامل: {exc}"
+            if getattr(self, "_command_is_private", False):
+                self.send_private_text(sender, reply)
+            else:
+                self.send_room_text(room, reply)
+            self._process_room_actions()
+            return True
+        short = re.fullmatch(r"(a|o|b|ub|u|k|m)@(.+)", str(text).strip(), re.I)
         if short:
-            mapping = {"a": "admin", "o": "owner", "b": "ban", "u": "member", "k": "kick", "m": "member"}
+            mapping = {"a": "admin", "o": "owner", "b": "ban", "ub": "member", "u": "member", "k": "kick", "m": "grant_member"}
             self._moderate(room, short.group(2), mapping[short.group(1).casefold()])
             return True
         long_form = re.fullmatch(r"(admin|owner|ban|unban|kick|member)\s+@?([^\s@]+)", str(text).strip(), re.I)
@@ -406,6 +589,33 @@ class RestrictedTalkinBot(TalkinBot):
             except Exception as exc:
                 self.log("[S-BOOT] invitation request failed", repr(exc))
                 self.send_room_text(room, "❌ تعذر بدء الدعوات.")
+            return True
+        invite_message = re.fullmatch(r"invmsg@(.+)", str(text).strip(), re.I | re.S)
+        if invite_message:
+            template = invite_message.group(1).strip()
+            if template.casefold() == "reset":
+                self._invite_templates.reset(room)
+                reply = "✅ تمت استعادة نص الدعوة الافتراضي. اسم الغرفة يبقى ظاهرًا بين قوسين."
+            else:
+                try:
+                    saved = self._invite_templates.set(room, template)
+                    preview = saved.replace("{room}", room).replace("{sender}", sender).replace("{username}", "اسم_المستخدم")
+                    reply = f"✅ تم حفظ نص الدعوة لهذه الغرفة.\nمعاينة: {preview}"
+                except Exception as exc:
+                    reply = f"❌ {exc}"
+            if getattr(self, "_command_is_private", False):
+                self.send_private_text(sender, reply)
+            else:
+                self.send_room_text(room, reply)
+            return True
+        if low in {"l@invmsg", "l@invite-message"}:
+            template = self._invite_message_for_room(room)
+            preview = template.replace("{room}", room).replace("{sender}", sender).replace("{username}", "اسم_المستخدم")
+            reply = f"✉️ نص الدعوة الحالي لهذه الغرفة:\n{template}\n\nمعاينة: {preview}"
+            if getattr(self, "_command_is_private", False):
+                self.send_private_text(sender, reply)
+            else:
+                self.send_room_text(room, reply)
             return True
         direct = re.fullmatch(r"i@(.+)", str(text).strip(), re.I)
         if direct:
@@ -451,22 +661,27 @@ class RestrictedTalkinBot(TalkinBot):
                 names = [primary] + list(delegates)
                 lines = ["👑 ماسترات الغرفة", "━━━━━━━━━━━━"]
                 lines.extend(f"{index}. @{name}" for index, name in enumerate(names, 1))
-                self.send_room_text(room, "\n".join(lines))
+                response = "\n".join(lines)
+                if getattr(self, "_command_is_private", False):
+                    self.send_private_text(sender, response)
+                else:
+                    self.send_room_text(room, response)
             except Exception as exc:
-                self.send_room_text(room, f"❌ تعذر عرض الماسترات: {exc}")
+                response = f"❌ تعذر عرض الماسترات: {exc}"
+                if getattr(self, "_command_is_private", False):
+                    self.send_private_text(sender, response)
+                else:
+                    self.send_room_text(room, response)
             return True
         if low in {"l@inv", "l@invitations"}:
-            names = self.sent_invites(room)
-            lines = ["📨 الدعوات المرسلة", "━━━━━━━━━━━━"]
-            if names:
-                lines.extend(f"{index}. @{name}" for index, name in enumerate(names, 1))
-                lines.append(f"\n📊 الإجمالي: {len(names)}")
-            else:
-                lines.append("📭 لم تُرسل دعوات مسجلة لهذه الغرفة.")
-            self.send_room_text(room, "\n".join(lines))
+            self._send_invite_history(
+                room,
+                private_to=sender if getattr(self, "_command_is_private", False) else "",
+            )
             return True
         if low in {"l@m", "l@a", "l@o", "l@b", "l@all", "l@*", "l@x"}:
-            return bool(self._room_list_commands(room, text, sender, is_private=False))
+            self._help_page_by_sender.pop(_norm_user(sender), None)
+            return bool(self._room_list_commands(room, text, sender, is_private=getattr(self, "_command_is_private", False)))
         return False
 
     def _apply_protection(self, room: str, sender: str, body: str) -> bool:
@@ -519,6 +734,8 @@ class RestrictedTalkinBot(TalkinBot):
                 "admin": f"🛡️ تم رفع @{changed_user} إلى مشرف.",
                 "owner": f"👑 تم رفع @{changed_user} إلى أونر.",
             }.get(changed_role)
+            if changed_role == "member" and pending.get("membership_grant"):
+                label = f"✅ تم منح @{changed_user} عضوية الغرفة."
             if label:
                 self.send_room_text(room, label)
 
@@ -558,6 +775,8 @@ class RestrictedTalkinBot(TalkinBot):
         if event_type == "text" and body and sender and normalize(sender) != normalize(BOT_ID):
             if not self._handle_controller_command(room, sender, body):
                 self._apply_protection(room, sender, body)
+        self._deliver_cricket_events()
+        self._process_room_actions()
         uid = str(result.get("uid", "") or "")
         if uid:
             try:
@@ -582,12 +801,18 @@ class RestrictedTalkinBot(TalkinBot):
                 if rank_room:
                     self._validate_controller_rank(rank_room, result)
                 if not self._handle_invitation_roster(result):
-                    self.process_occupants_for_invite(result)
-                    self._complete_pending_room_list(result)
+                    # The list coordinator must consume each category first;
+                    # otherwise the inherited inviter sends the first owner
+                    # response immediately and skips admins/members.
+                    if not self._complete_pending_room_list(result):
+                        self.process_occupants_for_invite(result)
             chat = result.get("chat_message") or {}
             sender = str(chat.get(3, "") or "").strip()
             body = str(chat.get(5, "") or "").strip()
-            if sender and body and self._is_master(sender):
+            if sender and body and (
+                self._is_master(sender)
+                or body.casefold().strip() in {"help", "مساعدة", "الاوامر", "الأوامر", "ns"}
+            ):
                 self._command_is_private = True
                 try:
                     self._handle_controller_command(self.target_room, sender, body)
@@ -600,15 +825,27 @@ class RestrictedTalkinBot(TalkinBot):
             self.log("[S-BOOT] message processing failed", repr(exc))
 
     def start(self) -> None:
+        self._shared_worker_stop.clear()
+        if self.role == "controller":
+            threading.Thread(target=self._shared_state_worker, name=f"shared-state-{self.record_id[:8]}", daemon=True).start()
         try:
             super().start()
         finally:
+            self._shared_worker_stop.set()
             try:
                 from registry import BotRegistry
                 registry = BotRegistry(self.registry_root, os.environ["STATE_ENCRYPTION_KEY"], os.getenv("SERVER_ADMIN_NAME", ""))
                 registry.update_runtime(self.record_id, "offline", None)
             except Exception:
                 pass
+
+    def _shared_state_worker(self) -> None:
+        while not self._shared_worker_stop.wait(1.0):
+            room_key = _norm_room(self.target_room)
+            if not room_key or room_key not in {_norm_room(x) for x in self.connected_rooms}:
+                continue
+            self._deliver_cricket_events()
+            self._process_room_actions()
 
 
 if __name__ == "__main__":

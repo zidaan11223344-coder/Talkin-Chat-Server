@@ -58,8 +58,8 @@ def main() -> int:
         "ASSET_HTTP_ENABLED": "0",
         "GITHUB_SYNC": "0",
         "BOT_DATA_DIR": str(data_dir / "control"),
-        "BOT_FIRST_CONNECTION_STATUS": os.getenv("SERVER_PROFILE_STATUS", "<B><H4><div style='background-color:#101827;padding:9px;text-align:center;'><font color='#FF5A5F'>🛡️ -sbot-</font><br><font color='#C4B5FD'>سيرفر إدخال بوتات تحكم وصامتة</font><br><font color='#34D399'>الإدارة • الحماية • الدعوات • القوائم</font><br><font color='#60A5FA'>Bot Entry Server • Admin • Protection • Invites • Lists</font></div></H4></B>"),
-        "BOT_BASE_STATUS": os.getenv("SERVER_PROFILE_STATUS", "<B><H4><div style='background-color:#101827;padding:9px;text-align:center;'><font color='#FF5A5F'>🛡️ -sbot-</font><br><font color='#C4B5FD'>سيرفر إدخال بوتات تحكم وصامتة</font><br><font color='#34D399'>الإدارة • الحماية • الدعوات • القوائم</font><br><font color='#60A5FA'>Bot Entry Server • Admin • Protection • Invites • Lists</font></div></H4></B>"),
+        "BOT_FIRST_CONNECTION_STATUS": os.getenv("SERVER_PROFILE_STATUS", "<B><H4><div style='background-color:#101827;padding:9px;text-align:center;'><font color='#FF5A5F'>🛡️ -sbot-</font><br><font color='#C4B5FD'>سيرفر إدخال بوتات تحكم وصامتة</font><br><font color='#34D399'>الإدارة • الحماية • الدعوات • القوائم • الكركيت</font><br><font color='#60A5FA'>Bot Entry Server • Admin • Protection • Invites • Lists • Cricket</font></div></H4></B>"),
+        "BOT_BASE_STATUS": os.getenv("SERVER_PROFILE_STATUS", "<B><H4><div style='background-color:#101827;padding:9px;text-align:center;'><font color='#FF5A5F'>🛡️ -sbot-</font><br><font color='#C4B5FD'>سيرفر إدخال بوتات تحكم وصامتة</font><br><font color='#34D399'>الإدارة • الحماية • الدعوات • القوائم • الكركيت</font><br><font color='#60A5FA'>Bot Entry Server • Admin • Protection • Invites • Lists • Cricket</font></div></H4></B>"),
     })
 
     # Import after the environment above has been installed.

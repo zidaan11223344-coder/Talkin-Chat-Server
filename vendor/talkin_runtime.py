@@ -8120,13 +8120,15 @@ class TalkinBot:
 
         # IMPORTANT: normal TalkinChat private message, deliberately NOT
         # room_invite_username / native system invitation.
-        text = self.invite_message_template or "يوجد معجب مخفي في {room}"
+        template_provider = getattr(self, "_invite_message_for_room", None)
+        text = (template_provider(room) if callable(template_provider)
+                else (self.invite_message_template or "يوجد معجب مخفي في {room}"))
         if "{room}" not in text:
-            text = text.rstrip() + " {room}"
-        try:
-            text = text.format(sender=(inviter or INVITE_SENDER_NAME), room=room, username=username)
-        except Exception:
-            text = f"يوجد معجب مخفي في {room}"
+            text = text.rstrip() + " ({room})"
+        # Replace only the supported tokens so ordinary braces in user copy
+        # cannot raise a format-string exception or discard the room name.
+        text = (str(text).replace("{sender}", str(inviter or INVITE_SENDER_NAME))
+                .replace("{room}", room).replace("{username}", username))
         self.send_query(encode_query("chat_message", type_="text", to=username, body=text))
 
         with self.invite_lock:

@@ -95,7 +95,7 @@ class BotServerService:
                 "del@room / delall@room — remove bots\n"
                 "bots / room@room — server status\n"
                 "master@user@room / delmaster@user@room / masters@room\n"
-                "The controller accepts only administration, protection, invitations and lists.\n"
+                "The controller accepts administration, protection, invitations, lists, and optional shared cricket.\n"
                 "Keep bot passwords private. Change language: lang@ar / lang@en."
             )
         return (
@@ -107,7 +107,7 @@ class BotServerService:
             "del@الغرفة / delall@الغرفة — حذف البوتات\n"
             "bots / room@الغرفة — عرض الحالة\n"
             "master@اسم@الغرفة / delmaster@اسم@الغرفة / masters@الغرفة\n"
-            "البوت المتحكم للإدارة والحماية والدعوات وعرض القوائم فقط.\n"
+            "البوت المتحكم للإدارة والحماية والدعوات وعرض القوائم، ولعبة الكركيت المشتركة عند تشغيلها.\n"
             "لا ترسل كلمات المرور في مجموعة. تغيير اللغة: lang@ar / lang@en."
         )
 
@@ -166,7 +166,7 @@ class BotServerService:
                 self.start_record(record)
                 return (
                     f"✅ تمت إضافة @{record['username']} كبوت متحكم لغرفة {record['room']}.\n"
-                    "🛡️ الأوامر المتاحة له: الإدارة والحماية والدعوات وعرض القوائم فقط.\n"
+                    "🛡️ الأوامر المتاحة له: الإدارة والحماية والدعوات والقوائم، ولعبة الكركيت المشتركة عند تشغيلها.\n"
                     "📌 سيتم تطبيق الحالة الملوّنة عند اتصال البوت."
                 )
             if low.startswith("delall@") or low.startswith("clean@"):
