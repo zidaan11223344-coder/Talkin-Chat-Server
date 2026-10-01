@@ -16,7 +16,8 @@ from state import normalize
 class BotServerService:
     def __init__(self, data_dir: str | Path, encryption_key: str, admin_name: str, spawn: bool = True):
         self.data_dir = Path(data_dir).resolve()
-        self.registry = BotRegistry(self.data_dir, encryption_key, admin_name)
+        self.encryption_key = str(encryption_key)
+        self.registry = BotRegistry(self.data_dir, self.encryption_key, admin_name)
         self.spawn_enabled = bool(spawn)
         self._processes: dict[str, subprocess.Popen] = {}
         self._lock = threading.RLock()
@@ -33,6 +34,7 @@ class BotServerService:
                 return
             env = os.environ.copy()
             env["BOT_SERVER_DATA_DIR"] = str(self.data_dir)
+            env["STATE_ENCRYPTION_KEY"] = self.encryption_key
             env["ASSET_HTTP_ENABLED"] = "0"
             env["GITHUB_SYNC"] = "0"
             process = subprocess.Popen(

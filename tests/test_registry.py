@@ -59,6 +59,17 @@ class RegistryTests(unittest.TestCase):
         full = service.registry.get(bot["id"], include_password=True)
         self.assertEqual(full["password"], "p@ss")
 
+    def test_spawned_child_receives_the_persistent_encryption_key(self):
+        service = BotServerService(self.temp.name, self.key, "Admin")
+        record = service.registry.create(BotSpec("child", "child-secret", "Room", "controller", "master"))
+        fake_process = type("FakeProcess", (), {"pid": 12345, "poll": lambda self: None})()
+        with patch("control_server.subprocess.Popen", return_value=fake_process) as popen, \
+             patch("control_server.threading.Thread"):
+            service.start_record(record)
+        child_env = popen.call_args.kwargs["env"]
+        self.assertEqual(child_env["STATE_ENCRYPTION_KEY"], self.key)
+        self.assertEqual(child_env["BOT_SERVER_DATA_DIR"], str(service.data_dir))
+
     def test_server_status_uses_blue_in_place_of_yellow(self):
         source = Path(__file__).resolve().parents[1] / "app.py"
         app_text = source.read_text(encoding="utf-8")
