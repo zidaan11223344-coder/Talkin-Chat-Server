@@ -101,14 +101,16 @@ class RestrictedTalkinBot(TalkinBot):
         self.bot_room_roles[room_key] = role
         if self._is_owner_role(role):
             return
-        self.connected_rooms.discard(room)
-        self.room_users.pop(room, None)
+        # A lower role must not make the bot leave the room.  Talkin's
+        # you_joined event already proves physical room membership.  The
+        # controller may have limited moderation capabilities, but silently
+        # leaving here made the server report a successful join and then
+        # immediately disappear from the room.
         self.send_private_text(
             BOT_MASTER,
-            f"⚠️ البوت المتحكم @{BOT_ID} رتبته الحالية أقل من أونر في الغرفة {room}.\n"
-            "ارفع البوت أونر ثم أعد المحاولة.",
+            f"⚠️ تم دخول البوت @{BOT_ID} إلى الغرفة {room} فعلياً، لكن رتبته الحالية {role} وليست أونر.\n"
+            "سيبقى داخل الغرفة، وقد تتعذر بعض أوامر الإدارة حتى ترفعه أونر.",
         )
-        self.leave_room(room)
 
     def _auto_rejoin_after_removal(self, room: str) -> None:
         """Rejoin only after a server removal, never after intentional leave."""
@@ -934,8 +936,10 @@ class RestrictedTalkinBot(TalkinBot):
             result = decode_result_message(message)
             result_type = str(result.get("type") or "").strip()
             room_value = str(result.get("value") or "").strip()
-            if result_type == "success" and room_value and _norm_room(room_value) in self._pending_room_joins:
-                self.handle_room_event({"room_event": {1: "you_joined", 13: room_value}, "uid": result.get("uid", "")})
+            # Do NOT synthesize you_joined from a generic success response.
+            # A generic success only acknowledges the request packet; the
+            # authoritative proof of physical room membership is Talkin's
+            # room_event you_joined/you_rejoined.
             if result.get("room_event"):
                 self.handle_room_event(result)
             if result.get("users") or result.get("room_admin"):
