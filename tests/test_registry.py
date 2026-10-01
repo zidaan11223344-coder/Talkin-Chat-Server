@@ -95,10 +95,9 @@ class RegistryTests(unittest.TestCase):
     def test_help_contains_requested_paged_moderation_commands(self):
         source = Path(__file__).resolve().parents[1] / "restricted_runtime.py"
         runtime_text = source.read_text(encoding="utf-8")
-        for text in ("📋 أوامر الإدارة — 1 | الإدارة والحظر", "ub@اسم", "m@اسم", "a@اسم", "o@اسم", "📌 للقائمة التالية اكتب ns"):
+        for text in ("📋 أوامر الإدارة — 1 | الحظر والطرد", "bl@اسم", "ub@اسم", "m@اسم", "📌 للقائمة التالية اكتب ns"):
             self.assertIn(text, runtime_text)
         self.assertIn("def _advance_restricted_list_page", runtime_text)
-        self.assertNotIn("bl@اسم — حظر عضو بكل غرف السيرفر", runtime_text)
 
     def test_restricted_admin_aliases_and_nonmaster_help_dispatch(self):
         bot = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
@@ -167,82 +166,73 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(queue.pending_for_room("room a"), [])
         self.assertEqual(len(queue.pending_for_room("Room B")), 1)
 
-    def test_cricket_two_player_rosters_and_turn_order(self):
+    def test_cricket_two_players_in_one_room_and_turn_order(self):
         game = CricketGame(self.temp.name)
         game.set_enabled("Room A", True)
-        self.assertTrue(game.enabled("Room B"))
         self.assertIsNone(game.begin_setup("Room A"))
         self.assertIsNone(game.select_player_count("Room A", 2))
-        for user in ("alpha", "beta"):
-            self.assertIsNone(game.join("Room A", user))
-        for user in ("gamma", "delta"):
-            self.assertIsNone(game.join("Room B", user))
+        self.assertIsNone(game.join("Room A", "alpha"))
+        self.assertIsNone(game.join("Room A", "beta"))
         state = game.current()
-        self.assertEqual(state["stage"], "teams")
+        self.assertEqual(state["stage"], "live")
         self.assertEqual(state["target_players"], 2)
-        self.assertEqual(len(state["rooms"][0]["players"]), 2)
-        self.assertIsNone(game.choose_team("Room A", "attack"))
-        self.assertIsNone(game.choose_team("Room B", "defense"))
-        self.assertIn("alpha", game.submit_ball("Room A", "beta", 3))
-        self.assertIsNone(game.submit_ball("Room A", "alpha", 3))
-        self.assertIsNone(game.submit_ball("Room B", "gamma", 2))
-        self.assertIn("beta", game.submit_ball("Room A", "alpha", 4))
-        self.assertIsNone(game.submit_ball("Room A", "beta", 4))
-        self.assertIsNone(game.submit_ball("Room B", "delta", 1))
-        self.assertEqual(game.current()["scores"]["attack"], 7)
+        self.assertEqual(len(state["rooms"]), 1)
+        self.assertEqual(state["rooms"][0]["players"], ["alpha", "beta"])
+        with patch("cricket_game.random.randint", return_value=6):
+            self.assertIsNone(game.submit_ball("Room A", "alpha", 3))
+        self.assertIn("alpha", "\n".join(event["text"] for event in game.events_after("Room A", 0)))
 
-    def test_cricket_accepts_every_team_size_from_one_through_four(self):
+    def test_cricket_accepts_one_to_four_players_in_one_room(self):
         for count in range(1, 5):
-            with self.subTest(players_per_room=count):
+            with self.subTest(players=count):
                 game = CricketGame(Path(self.temp.name) / f"size-{count}")
                 game.set_enabled("Room A", True)
                 self.assertIsNone(game.start("Room A", count))
                 for index in range(count):
-                    self.assertIsNone(game.join("Room A", f"a{index}"))
-                    self.assertIsNone(game.join("Room B", f"b{index}"))
+                    self.assertIsNone(game.join("Room A", f"p{index}"))
                 match = game.current()
                 self.assertEqual(match["target_players"], count)
-                self.assertEqual(match["stage"], "teams")
-                self.assertEqual([len(room["players"]) for room in match["rooms"]], [count, count])
+                self.assertEqual(match["stage"], "live")
+                self.assertEqual(len(match["rooms"]), 1)
+                self.assertEqual(len(match["rooms"][0]["players"]), count)
+                self.assertEqual(match["mode"], "solo")
 
-    def test_cross_room_duck_hattrick_and_all_player_turns(self):
+    def test_single_room_turns_images_and_prize_points(self):
         game = CricketGame(self.temp.name)
         game.set_enabled("Room A", True)
-        self.assertIsNone(game.start("Room A", 3))
-        for user in ("a1", "a2", "a3"):
-            self.assertIsNone(game.join("Room A", user))
-        for user in ("b1", "b2", "b3"):
-            self.assertIsNone(game.join("Room B", user))
-        self.assertIsNone(game.choose_team("Room A", "attack"))
-        self.assertIsNone(game.choose_team("Room B", "defense"))
-        for index, number in enumerate((1, 2, 3), 1):
-            self.assertIsNone(game.submit_ball("Room A", f"a{index}", number))
-            self.assertIsNone(game.submit_ball("Room B", f"b{index}", number))
-        self.assertEqual(game.current()["innings"], 2)
-        room_events = game.events_after("Room A", 0)
-        images = [image for event in room_events for image in event["images"]]
-        self.assertIn("cricket_number_1.png", images)
-        self.assertIn("cricket_duck.png", images)
-        self.assertIn("cricket_hattrick.png", images)
-        self.assertIsNone(game.submit_ball("Room B", "b1", 2))
-        self.assertIsNone(game.submit_ball("Room A", "a1", 1))
+        self.assertIsNone(game.start("Room A", 2))
+        self.assertIsNone(game.join("Room A", "alpha"))
+        self.assertIsNone(game.join("Room A", "beta"))
+        # Six human batting balls, then six bot batting balls. Human players rotate.
+        with patch("cricket_game.random.randint", side_effect=[6, 6, 6, 6, 6, 6, 0, 0, 0, 0, 0, 0]):
+            for user in ("alpha", "beta", "alpha", "beta", "alpha", "beta"):
+                self.assertIsNone(game.submit_ball("Room A", user, 1))
+            self.assertEqual(game.current()["innings"], 2)
+            for user in ("alpha", "beta", "alpha", "beta", "alpha", "beta"):
+                self.assertIsNone(game.submit_ball("Room A", user, 1))
         self.assertIsNone(game.current())
+        events = game.events_after("Room A", 0)
+        images = [image for event in events for image in event["images"]]
+        self.assertIn("cricket_ball_1.png", images)
+        self.assertIn("cricket_result_", "\n".join(images))
+        self.assertIn("بوت S-Boot", "\n".join(event["text"] for event in events))
+        self.assertEqual(game.get_points("alpha"), 100000)
+        self.assertEqual(game.get_points("beta"), 100000)
 
     def test_single_player_can_play_against_the_controller_bot(self):
         game = CricketGame(self.temp.name)
         game.set_enabled("Room A", True)
-        self.assertIsNone(game.begin_setup("Room A"))
-        self.assertIsNone(game.select_player_count("Room A", 1))
-        self.assertIsNone(game.play_bot("Room A", "solo_player"))
-        self.assertEqual(game.current()["stage"], "teams")
-        self.assertIsNone(game.choose_team("Room A", "attack"))
-        with patch("cricket_game.random.randint", side_effect=[1, 1]):
-            self.assertIsNone(game.submit_ball("Room A", "solo_player", 1))
-            self.assertIsNone(game.submit_ball("Room A", "solo_player", 0))
+        self.assertIsNone(game.start("Room A", 1))
+        self.assertIsNone(game.join("Room A", "solo_player"))
+        self.assertEqual(game.current()["stage"], "live")
+        with patch("cricket_game.random.randint", side_effect=[2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0]):
+            for _ in range(6):
+                self.assertIsNone(game.submit_ball("Room A", "solo_player", 1))
+            for _ in range(6):
+                self.assertIsNone(game.submit_ball("Room A", "solo_player", 1))
         self.assertIsNone(game.current())
         images = [image for event in game.events_after("Room A", 0) for image in event["images"]]
-        self.assertIn("cricket_duck.png", images)
-        self.assertIn("🤖 بوت S-Boot", "\n".join(event["text"] for event in game.events_after("Room A", 0)))
+        self.assertIn("cricket_ball_1.png", images)
         delivered_media = []
         controller = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
         controller.role = "controller"
@@ -254,9 +244,7 @@ class RegistryTests(unittest.TestCase):
         controller.send_room_media = lambda room, url, kind: delivered_media.append((room, url, kind))
         controller.send_room_text = lambda *_args: None
         controller._deliver_cricket_events()
-        self.assertIn(("Room A", "https://assets.test/cricket_duck.png", "image"), delivered_media)
-        game.set_enabled("Room A", False)
-        self.assertFalse(game.enabled("Room B"))
+        self.assertIn(("Room A", "https://assets.test/cricket_ball_1.png", "image"), delivered_media)
 
     def test_controller_commands_route_size_selection_and_solo_bot(self):
         controller = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
@@ -269,42 +257,23 @@ class RegistryTests(unittest.TestCase):
         controller.send_room_text = lambda *_args: None
         self.assertTrue(controller._handle_controller_command("Room A", "master", ".cr 1"))
         self.assertEqual(controller._cricket.current()["stage"], "setup")
-        self.assertTrue(controller._handle_controller_command("Room A", "master", "1"))
-        self.assertEqual(controller._cricket.current()["target_players"], 1)
-        self.assertTrue(controller._handle_controller_command("Room A", "player", "bot"))
-        self.assertEqual(controller._cricket.current()["stage"], "teams")
-        self.assertTrue(controller._handle_controller_command("Room A", "player", "1"))
+        self.assertTrue(controller._handle_controller_command("Room A", "master", "3"))
+        self.assertEqual(controller._cricket.current()["target_players"], 3)
+        self.assertTrue(controller._handle_controller_command("Room A", "player1", "Join"))
+        self.assertTrue(controller._handle_controller_command("Room A", "player2", "Join"))
+        self.assertTrue(controller._handle_controller_command("Room A", "player3", "Join"))
         self.assertEqual(controller._cricket.current()["stage"], "live")
+        self.assertEqual(len(controller._cricket.current()["rooms"][0]["players"]), 3)
 
     def test_all_cricket_images_are_transparent_and_under_100_kb(self):
         root = Path(__file__).resolve().parents[1] / "vendor" / "assets"
-        expected = [*(f"cricket_number_{i}.png" for i in range(7)), "cricket_duck.png", "cricket_hattrick.png"]
+        expected = [*(f"cricket_ball_{i}.png" for i in range(0, 7)), "cricket_duck.png", "cricket_hattrick.png"]
         for name in expected:
             path = root / name
             self.assertTrue(path.is_file(), name)
             self.assertLess(path.stat().st_size, 100_000, name)
             header = path.read_bytes()[:26]
             self.assertEqual(header[25], 6, f"{name} must be a true RGBA PNG")
-
-    def test_cricket_awards_200k_equally_to_winning_players_and_persists_points(self):
-        game = CricketGame(self.temp.name)
-        game.set_enabled("Room A", True)
-        self.assertIsNone(game.start("Room A", 2))
-        for user in ("alpha", "beta"):
-            self.assertIsNone(game.join("Room A", user))
-        for user in ("gamma", "delta"):
-            self.assertIsNone(game.join("Room B", user))
-        self.assertIsNone(game.choose_team("Room A", "attack"))
-        self.assertIsNone(game.choose_team("Room B", "defense"))
-        data = game.state.load()
-        match = data["match"]
-        match["scores"] = {"attack": 10, "defense": 2}
-        match["teams"] = {"room a": "attack", "room b": "defense"}
-        game._finish(data, match, game._participants(match))
-        game.state.save(data)
-        self.assertEqual(game.points_for("alpha"), 100000)
-        self.assertEqual(game.points_for("beta"), 100000)
-        self.assertEqual(sum(row[1] for row in game.leaderboard(10)), 200000)
 
     @staticmethod
     def _query_fields(packet):
