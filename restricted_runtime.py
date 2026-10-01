@@ -13,7 +13,6 @@ from typing import Any
 
 from state import JsonState, normalize
 from cricket_game import CricketGame
-from cricket_renderer import render_scoreboard
 from invite_templates import InviteTemplateStore
 from room_actions import RoomActionQueue
 
@@ -150,45 +149,40 @@ class RestrictedTalkinBot(TalkinBot):
     def _help_text(self, page: int = 1) -> str:
         if int(page) == 1:
             return (
-                "📋 أوامر الإدارة — 1 | الإدارة والحظر\n"
+                "📋 أوامر الإدارة — 1 | الحظر والطرد\n"
                 "━━━━━━━━━━━━\n"
                 "k@اسم — طرد عضو\n"
                 "kick اسم — طرد عضو\n"
                 "b@اسم — حظر عضو\n"
                 "ban اسم — حظر عضو\n"
+                "bl@اسم — حظر عضو بكل غرف السيرفر\n"
                 "ub@اسم — فك الحظر\n"
                 "u@اسم — فك الحظر\n"
                 "unban اسم — فك الحظر\n"
                 "m@اسم — إعطاء عضوية\n"
-                "member اسم — إعطاء عضوية\n"
-                "a@اسم — تعيين مشرف\n"
-                "admin اسم — تعيين مشرف\n"
-                "o@اسم — تعيين أونر\n"
-                "owner اسم — تعيين أونر\n"
                 ".u — تراجع عن آخر إجراء إداري للبوت\n\n"
                 "📌 للقائمة التالية اكتب ns"
             )
         return (
-            "📋 أوامر الإدارة — 2 | الحماية والدعوات والقوائم والألعاب\n"
+            "📋 أوامر الإدارة — 2 | الحماية والدعوات والقوائم\n"
             "━━━━━━━━━━━━\n"
-            "🛡️ حماية — عرض إعدادات الحماية\n"
+            "a@اسم — تعيين مشرف | o@اسم — تعيين أونر\n"
+            "حماية — عرض إعدادات الحماية\n"
             "تشغيل الحماية / إيقاف الحماية\n"
             "+mf@كلمة / -mf@كلمة — إضافة/حذف كلمة ممنوعة\n"
-            "l@mf — الكلمات الممنوعة | clear@mf — تنظيفها\n"
-            "mr@2 إلى mr@50 — حد التكرار\n\n"
-            "📨 inv — دعوة الأونرات والمشرفين والأعضاء\n"
-            "invmsg@النص — تغيير نص الدعوة\n"
-            "invmsg@reset — استعادة النص الافتراضي\n"
-            "i@اسم — دعوة مستخدم | l@inv — سجل الدعوات\n\n"
-            "📋 l@m / l@a / l@o / l@b / l@all — قوائم الغرفة\n"
-            "l@mas — الماسترات | mas@اسم — إضافة ماستر مساعد\n"
-            "umas@اسم — إزالة ماستر مساعد\n\n"
-            "🏏 الكركيت: .cr 1 ثم اختر 1–4 لاعبين لكل غرفة\n"
-            ".cr 0 — إيقاف | Join — انضمام | bot — ضد البوت\n"
-            "1 هجوم / 2 دفاع، ثم يرسل اللاعب دوره رقمًا من 0 إلى 6\n"
-            "💰 الجائزة: 200,000 نقطة للفريق الفائز وتُقسم بالتساوي بين لاعبيه\n"
-            "🏆 نقاط — نقاطك | نقاط@اسم — نقاط لاعب | المتصدرين — أعلى 10\n\n"
-            "📌 هذه آخر قائمة أوامر الإدارة."
+            "l@mf — الكلمات الممنوعة | mr@2 إلى mr@50 — حد التكرار\n\n"
+            "inv — دعوة الأونرات والمشرفين والأعضاء\n"
+            "invmsg@النص ({room}) — تغيير نص الدعوة مع إبقاء اسم الغرفة\n"
+            "invmsg@reset — استعادة نص الدعوة الافتراضي\n"
+            "i@اسم — دعوة مستخدم | l@inv — الدعوات المرسلة برسالة واحدة\n\n"
+            "l@m / l@a / l@o / l@b — قوائم الغرفة\n"
+            "l@mas — عرض الماسترات\n"
+            "mas@اسم — إضافة ماستر مساعد | umas@اسم — إزالته\n\n"
+            "🏏 الكركيت: .cr 1 ثم اختر 1–4 لاعبين لكل غرفة | .cr 0 إيقاف\n"
+            "كل لاعب يرسل Join؛ عند لاعب واحد اكتب bot لمواجهة بوت الغرفة المتحكم،\n"
+            "أو انتظر Join من غرفة أخرى. تختار كل غرفة 1 هجوم أو 2 دفاع.\n"
+            "الأدوار تتناوب، واللاعب المطلوب يرسل رقمًا من 0 إلى 6.\n\n"
+            "⚠️ إدارة الأوامر للماستر المسجّل فقط."
         )
 
     def _send_help(self, room: str, private_to: str = "", page: int = 1) -> None:
@@ -360,9 +354,22 @@ class RestrictedTalkinBot(TalkinBot):
         send(text)
 
     def _cricket_asset_url(self, filename: str) -> str:
+        name = str(filename or "").strip()
+        if name.startswith("cricket_result_"):
+            base = (
+                os.getenv("CRICKET_RESULT_BASE_URL", "").strip()
+                or os.getenv("PUBLIC_BASE_URL", "").strip()
+                or os.getenv("RAVEN_PUBLIC_URL", "").strip()
+                or os.getenv("RAVEN_PUBLIC_DOMAIN", "").strip()
+                or os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+            ).rstrip("/")
+            if base and not base.startswith(("http://", "https://")):
+                base = "https://" + base
+            if base:
+                return f"{base}/games/{name}"
         base = (os.getenv("CRICKET_ASSET_BASE_URL", "").strip()
                 or "https://raw.githubusercontent.com/zidaan11223344-coder/Talkin-Chat-Server/main/vendor/assets").rstrip("/")
-        return f"{base}/{filename}"
+        return f"{base}/{name}"
 
     def _deliver_cricket_events(self) -> None:
         if self.role != "controller" or not self.target_room or not self._cricket_delivery_lock.acquire(blocking=False):
@@ -373,15 +380,6 @@ class RestrictedTalkinBot(TalkinBot):
                 try:
                     for filename in event.get("images", []):
                         self.send_room_media(self.target_room, self._cricket_asset_url(filename), "image")
-                    scoreboard = event.get("scoreboard")
-                    if isinstance(scoreboard, dict):
-                        public_base = (os.getenv("CRICKET_PUBLIC_BASE_URL", "").strip() or os.getenv("PUBLIC_BASE_URL", "").strip()).rstrip("/")
-                        if public_base:
-                            try:
-                                media_path = render_scoreboard(scoreboard, self.registry_root / "cricket_media")
-                                self.send_room_media(self.target_room, f"{public_base}/cricket-media/{media_path.name}", "image")
-                            except Exception as exc:
-                                self.log("[CRICKET] scoreboard render/delivery failed", repr(exc))
                     if event.get("text"):
                         self.send_room_text(self.target_room, str(event["text"]))
                     self._cricket_cursor = int(event.get("id", self._cricket_cursor))
@@ -394,6 +392,22 @@ class RestrictedTalkinBot(TalkinBot):
     def _cricket_game(self, room: str, sender: str, text: str) -> bool:
         """Route game/lobby commands to the shared cross-controller match."""
         low = str(text or "").strip().casefold().translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+        if low in {"نقاط", "نقاطي", "رصيدي", "points", "my points"}:
+            self.send_room_text(room, f"💰 نقاط @{sender.lstrip('@')}: {self._cricket.get_points(sender):,}")
+            return True
+        points_match = re.fullmatch(r"(?:نقاط|points)@(.+)", low)
+        if points_match:
+            target = points_match.group(1).strip().lstrip("@")
+            self.send_room_text(room, f"💰 نقاط @{target}: {self._cricket.get_points(target):,}")
+            return True
+        if low in {"المتصدرين", "متصدرين", "ترتيب النقاط", "leaderboard", "top points"}:
+            rows = self._cricket.leaderboard(10)
+            if not rows:
+                self.send_room_text(room, "🏆 لا توجد نقاط مسجلة حتى الآن.")
+            else:
+                lines = ["🏆 متصدرو نقاط الكركيت"] + [f"{i}. @{name} — {value:,}" for i, (name, value) in enumerate(rows, 1)]
+                self.send_room_text(room, "\n".join(lines))
+            return True
         toggle = re.fullmatch(r"\.?cr\s*([01])", low)
         if toggle:
             if not self._is_master(sender):
@@ -445,7 +459,7 @@ class RestrictedTalkinBot(TalkinBot):
                 rooms = match.get("rooms", [])
                 target = match.get("target_players") or "لم يُحدد"
                 roster = " | ".join(f"{item.get('name')}: {len(item.get('players', []))}/{target}" for item in rooms)
-                self.send_room_text(room, f"🏏 حالة الكركيت: {match.get('stage')} — اللاعبون لكل غرفة: {target}.\n{roster}")
+                self.send_room_text(room, f"🏏 حالة الكركيت: {match.get('stage')} — اللاعبون في الغرفة: {target}.\n{roster}")
             else:
                 if not self._is_master(sender):
                     self.send_room_text(room, "🔒 بدء مباراة جديدة للماستر فقط. أرسل للماستر: .cr 1")
@@ -571,7 +585,8 @@ class RestrictedTalkinBot(TalkinBot):
         game_command = bool(
             re.fullmatch(r"\.?cr\s*[01٠١]", low)
             or re.fullmatch(r"(?:\.?cricket|كركيت|كريكت)(?:\s+[0-9٠-٩]+)?", low)
-            or low in {"join", "انضمام"}
+            or low in {"join", "انضمام", "نقاط", "نقاطي", "رصيدي", "points", "my points", "المتصدرين", "متصدرين", "ترتيب النقاط", "leaderboard", "top points"}
+            or bool(re.fullmatch(r"(?:نقاط|points)@.+", low))
             or (isinstance(match_state, dict) and (
                 (match_state.get("stage") == "setup" and low in {"1", "2", "3", "4"})
                 or (match_state.get("stage") == "lobby" and low in {"bot", "بوت", "ضد البوت", "solo", "vs bot"})
@@ -599,39 +614,6 @@ class RestrictedTalkinBot(TalkinBot):
                     self.send_room_text(room, response)
             else:
                 self._advance_restricted_list_page(room, sender)
-            return True
-        if low in {"نقاط", "points", "point", "رصيدي", "نقاطي"}:
-            value = self._cricket.points_for(sender)
-            reply = f"💰 رصيد @{str(sender).lstrip('@')}: {value:,} نقطة"
-            if getattr(self, "_command_is_private", False):
-                self.send_private_text(sender, reply)
-            else:
-                self.send_room_text(room, reply)
-            return True
-        points_user = re.fullmatch(r"(?:نقاط|points)@(.+)", str(text).strip(), re.I)
-        if points_user:
-            target = points_user.group(1).strip().lstrip("@")
-            value = self._cricket.points_for(target)
-            reply = f"💰 نقاط @{target}: {value:,}"
-            if getattr(self, "_command_is_private", False):
-                self.send_private_text(sender, reply)
-            else:
-                self.send_room_text(room, reply)
-            return True
-        if low in {"المتصدرين", "المتصدرون", "top", "leaderboard", "ترتيب"}:
-            rows = self._cricket.leaderboard(10)
-            if rows:
-                body = "\n".join(
-                    f"{index}. @{name} — {points:,} نقطة 🏆 {wins} فوز"
-                    for index, (name, points, wins) in enumerate(rows, 1)
-                )
-            else:
-                body = "📭 لا توجد نقاط مسجلة بعد."
-            reply = "🏆 المتصدرين في الكركيت\n━━━━━━━━━━━━\n" + body
-            if getattr(self, "_command_is_private", False):
-                self.send_private_text(sender, reply)
-            else:
-                self.send_room_text(room, reply)
             return True
         if not self._is_master(sender):
             # Prevent non-masters from probing any control command.

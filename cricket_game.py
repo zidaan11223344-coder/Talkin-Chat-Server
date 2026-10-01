@@ -1,36 +1,24 @@
 """Persistent cross-room cricket with player rosters and an optional S-Boot opponent."""
 from __future__ import annotations
 
-import os
 import random
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from state import JsonState, normalize
+from cricket_state import JsonState, normalize
 
 
-ASSET_FILES = tuple(f"cricket_ball_{number}.png" for number in range(1, 7)) + tuple(
-    f"cricket_number_{number}.png" for number in range(7)
-) + (
+ASSET_FILES = tuple(f"cricket_ball_{number}.png" for number in range(0, 7)) + (
     "cricket_duck.png",
     "cricket_hattrick.png",
 )
-CRICKET_PRIZE = max(0, int(os.getenv("CRICKET_PRIZE", "200000") or 200000))
 BOT_TEAM_KEY = "__sboot_cricket_bot__"
 
 
 def _blank() -> dict[str, Any]:
-    return {
-        "enabled": False,
-        "enabled_rooms": {},
-        "next_event_id": 0,
-        "match": None,
-        "events": [],
-        "points": {},
-        "prize_pool": CRICKET_PRIZE,
-    }
+    return {"enabled": False, "enabled_rooms": {}, "next_event_id": 0, "match": None, "events": [], "points": {}}
 
 
 def _key(room: str) -> str:
@@ -63,14 +51,7 @@ class CricketGame:
             if isinstance(item, dict) and item.get("key") and item.get("name")
         ]
 
-    def _emit(
-        self,
-        data: dict[str, Any],
-        rooms: list[dict[str, Any]],
-        text: str,
-        images: tuple[str, ...] = (),
-        scoreboard: dict[str, Any] | None = None,
-    ) -> None:
+    def _emit(self, data: dict[str, Any], rooms: list[dict[str, Any]], text: str, images: tuple[str, ...] = ()) -> None:
         events = data.setdefault("events", [])
         for participant in rooms:
             data["next_event_id"] = int(data.get("next_event_id", 0)) + 1
@@ -79,8 +60,10 @@ class CricketGame:
                 "room": participant["name"],
                 "room_key": participant["key"],
                 "text": str(text),
-                "images": [name for name in images if name in ASSET_FILES],
-                "scoreboard": scoreboard if isinstance(scoreboard, dict) else None,
+                "images": [
+                    name for name in images
+                    if name in ASSET_FILES or str(name).startswith("cricket_result_")
+                ],
                 "created_at": time.time(),
             })
         if len(events) > self.EVENT_HISTORY:
@@ -130,6 +113,7 @@ class CricketGame:
             "turns": {"attack": 0, "defense": 0},
             "wicket_streak": 0,
             "choices": {},
+            "player_scores": {},
         }
         return match
 
@@ -147,9 +131,10 @@ class CricketGame:
                 data,
                 self._participants(match),
                 "🏏 إعداد مباراة الكركيت\n"
-                "اختر عدد اللاعبين في كل غرفة بإرسال رقم من 1 إلى 4.\n"
-                "بعدها يرسل كل لاعب Join. عند اختيار لاعب واحد يمكنك كتابة bot لمواجهة بوت S-Boot، "
-                "أو تنتظر لاعبًا من غرفة أخرى.",
+                "اختر عدد اللاعبين داخل هذه الغرفة فقط:\n"
+                "1️⃣ لاعب واحد\n2️⃣ لاعبان\n3️⃣ ثلاثة لاعبين\n4️⃣ أربعة لاعبين\n"
+                "أرسل الرقم فقط، وبعدها كل لاعب يرسل Join في نفس الغرفة.\n"
+                "🤖 عند اكتمال العدد يبدأ اللعب تلقائيًا ضد بوت S-Boot.",
             )
             return None
 
@@ -176,10 +161,10 @@ class CricketGame:
             self._emit(
                 data,
                 self._participants(match),
-                f"👥 تم اختيار {count} لاعب(ين) في كل فريق.\n"
-                f"📍 غرفة البداية: {room_name}. على كل لاعب يريد المشاركة أن يرسل Join في غرفته.\n"
-                "لاعب واحد: اكتب bot للعب مع S-Boot، أو انتظر لاعبًا من غرفة أخرى.\n"
-                "بعد اكتمال لاعبي الغرفتين، تختار كل غرفة 1 للهجوم أو 2 للدفاع.",
+                f"👥 تم اختيار {count} لاعب(ين) في هذه الغرفة.\n"
+                f"📍 الغرفة: {room_name}\n"
+                "👤 كل اللاعبين يرسلون Join هنا فقط.\n"
+                "🤖 عند اكتمال العدد تبدأ المباراة تلقائيًا ضد بوت S-Boot.",
             )
             return None
 
@@ -201,13 +186,14 @@ class CricketGame:
             if isinstance(data.get("match"), dict):
                 return "⏳ توجد مباراة مفتوحة بالفعل؛ أرسل Join للانضمام أو انتظر انتهائها."
             match = self._new_match(room_name, room_key, "lobby", count)
+            match["mode"] = "solo"
             data["match"] = match
             self._emit(
                 data,
                 self._participants(match),
-                f"🏏 فُتحت مباراة الكركيت في {room_name} — {count} لاعب(ين) لكل غرفة.\n"
-                "كل لاعب يرسل Join في غرفته. لغرفة أخرى: أرسلوا Join أيضًا.\n"
-                "إذا كان العدد لاعبًا واحدًا وتريد اللعب مع بوت S-Boot، اكتب bot.",
+                f"🏏 فُتحت مباراة الكركيت في {room_name} — المطلوب {count} لاعب(ين).\n"
+                "👤 كل اللاعبين ينضمون من هذه الغرفة فقط بإرسال Join.\n"
+                "🤖 عند اكتمال العدد تبدأ المباراة تلقائيًا ضد S-Boot.",
             )
             return None
 
@@ -262,27 +248,61 @@ class CricketGame:
             participant = next((item for item in participants if item["key"] == room_key), None)
             if participant is None:
                 if len(participants) >= self.ROOM_TEAMS:
-                    return "⛔ اكتمل عدد الغرف؛ المباراة بين غرفتين فقط."
+                    return "⛔ اكتملت غرفتا المباراة. هذه الغرفة ليست مشاركة."
+                # Second room joins the same global match; its players become the opposing team.
                 participant = {"key": room_key, "name": room_name, "players": []}
-                participants.append(participant)
-                match["rooms"] = participants
-            players = participant.setdefault("players", [])
-            if len(players) >= target:
-                return f"⛔ اكتمل عدد لاعبي غرفة {room_name} ({target})."
-            players.append(username)
-            started_teams = self._maybe_start_teams(data, match)
-            if not started_teams:
-                joined_rooms = len(participants)
-                player_summary = " | ".join(
-                    f"{item['name']}: {len(item.get('players', []))}/{target}"
-                    for item in participants
-                )
+                match.setdefault("rooms", []).append(participant)
+                participants = self._participants(match)
                 self._emit(
                     data,
                     participants,
-                    f"✅ انضم @{username}.\n👥 اللاعبون: {player_summary}\n"
-                    f"🏠 الغرف: {joined_rooms}/{self.ROOM_TEAMS}. أرسل Join لإكمال فريقك أو من الغرفة الأخرى.",
+                    f"🔗 انضمت غرفة {room_name} للمباراة الجماعية.\n"
+                    f"👥 المطلوب {target} لاعب(ين) في كل غرفة.\n"
+                    "أرسل Join من لاعبي هذه الغرفة.",
                 )
+            players = participant.setdefault("players", [])
+            if len(players) >= target:
+                return f"⛔ اكتمل عدد اللاعبين ({target}) في هذه الغرفة."
+            players.append(username)
+
+            if len(participants) == 1:
+                if len(players) < target:
+                    self._emit(
+                        data, [participant],
+                        f"✅ انضم @{username}.\n👥 اكتمل {len(players)}/{target} لاعب في الغرفة.\n"
+                        "🔗 للمباراة الجماعية: اجعل الغرفة الثانية ترسل Join، أو أكمل العدد هنا للعب ضد S-Boot.",
+                    )
+                else:
+                    if match.get("mode") == "solo":
+                        # Direct `cricket N` keeps the original one-room vs S-Boot flow.
+                        match["mode"] = "solo"
+                        match["teams"] = {room_key: "attack", BOT_TEAM_KEY: "defense"}
+                        self._start_live(data, match, participants)
+                    else:
+                        # Setup mode remains open for a second room to join.
+                        self._emit(
+                            data, [participant],
+                            "✅ اكتمل لاعبو الغرفة.\n"
+                            "🔗 المباراة الجماعية ما زالت مفتوحة؛ اجعل غرفة ثانية ترسل Join.\n"
+                            "🤖 إذا أردت S-Boot بدل الغرفة الثانية، ابدأ مباراة مباشرة بـ .cr N.",
+                        )
+            elif len(participants) == self.ROOM_TEAMS:
+                full = all(len(item.get("players", [])) >= target for item in participants)
+                if full:
+                    match["mode"] = "rooms"
+                    match["stage"] = "teams"
+                    self._emit(
+                        data, participants,
+                        f"🏏 اكتمل الفريقان: {target} لاعب(ين) في كل غرفة.\n"
+                        "1 = هجوم | 2 = دفاع.\n"
+                        "كل غرفة تختار دورها، ثم تبدأ المباراة في الغرفتين معًا.",
+                    )
+                else:
+                    self._emit(
+                        data, [participant],
+                        f"✅ انضم @{username}.\n👥 اكتمل {len(players)}/{target} لاعب في هذه الغرفة.\n"
+                        "⏳ بانتظار اكتمال لاعبي الغرفة الأخرى.",
+                    )
             return None
 
         return self.state.mutate(mutate)
@@ -391,9 +411,11 @@ class CricketGame:
                 (value for key, value in (match.get("teams") or {}).items() if key != BOT_TEAM_KEY),
                 "attack",
             )
-            if human_team == batting:
-                return "🎯 دورك في الهجوم: أرسل رقمًا من 0 إلى 6، وسيختار بوت S-Boot تخمينه."
-            return "🛡️ دورك في الدفاع: أرسل رقمًا من 0 إلى 6 لتخمين ضربة بوت S-Boot."
+            if batting == human_team:
+                batter = self._next_player(match, human_team, batting=True)
+                return f"🎯 دور الضارب @{batter}: أرسل رقمًا من 0 إلى 6، وسيختار بوت S-Boot تخمينه."
+            bowler = self._next_player(match, human_team, batting=False)
+            return f"🛡️ دور @{bowler} للدفاع: أرسل رقمًا من 0 إلى 6 لتخمين ضربة بوت S-Boot."
         batter = self._next_player(match, batting, batting=True)
         bowler = self._next_player(match, bowling, batting=False)
         return (
@@ -413,15 +435,11 @@ class CricketGame:
         match["turns"] = {"attack": 0, "defense": 0}
         match["wicket_streak"] = 0
         match["choices"] = {}
-        match["player_stats"] = {
-            "attack": {
-                _user_key(player): {"username": str(player), "runs": 0, "balls": 0, "wickets": 0, "outs": 0}
-                for player in (self._room_for_team(match, "attack") or {}).get("players", [])
-            },
-            "defense": {
-                _user_key(player): {"username": str(player), "runs": 0, "balls": 0, "wickets": 0, "outs": 0}
-                for player in (self._room_for_team(match, "defense") or {}).get("players", [])
-            },
+        match["player_scores"] = {
+            str(player).lstrip("@"): 0
+            for item in participants
+            for player in item.get("players", [])
+            if str(player).strip()
         }
         self._emit(
             data,
@@ -433,99 +451,95 @@ class CricketGame:
         if team == BOT_TEAM_KEY:
             return 1
         participant = self._room_for_team(match, team)
-        return len(participant.get("players", [])) if participant else 1
-
-    def _award_prize(self, data: dict[str, Any], match: dict[str, Any], winner_team: str) -> list[tuple[str, int]]:
-        """Split the fixed prize equally among players on the winning side."""
-        if winner_team not in {"attack", "defense"}:
-            return []
-        winner_participant = self._room_for_team(match, winner_team)
-        if not winner_participant:
-            return []
-        players = [str(p).strip().lstrip("@") for p in winner_participant.get("players", []) if str(p).strip()]
-        if not players:
-            return []
-        prize = max(0, int(data.get("prize_pool") or CRICKET_PRIZE))
-        base, remainder = divmod(prize, len(players))
-        points = data.setdefault("points", {})
-        awarded: list[tuple[str, int]] = []
-        for index, player in enumerate(players):
-            amount = base + (1 if index < remainder else 0)
-            key = _user_key(player)
-            item = points.setdefault(key, {"username": player, "points": 0, "wins": 0})
-            item["username"] = player
-            item["points"] = int(item.get("points", 0)) + amount
-            item["wins"] = int(item.get("wins", 0)) + 1
-            awarded.append((player, amount))
-        return awarded
+        if participant:
+            return max(1, len(participant.get("players", [])))
+        if match.get("mode") == "solo":
+            rooms = self._participants(match)
+            return max(1, len(rooms[0].get("players", []))) if rooms else 1
+        return 1
 
     def _finish(self, data: dict[str, Any], match: dict[str, Any], participants: list[dict[str, Any]]) -> None:
         scores = match.get("scores") or {}
         attack_score = int(scores.get("attack", 0))
         defense_score = int(scores.get("defense", 0))
         winner_team = "attack" if attack_score > defense_score else "defense" if defense_score > attack_score else "tie"
-        if winner_team == "tie":
-            winner = "تعادل"
-            awarded: list[tuple[str, int]] = []
-        else:
-            winner_key = next(
-                (key for key, value in (match.get("teams") or {}).items() if value == winner_team),
-                "",
-            )
-            winner = "🤖 بوت S-Boot" if winner_key == BOT_TEAM_KEY else f"فريق {self._team_label(winner_team)}"
-            awarded = self._award_prize(data, match, winner_team)
-        lines = [
-            "🏆 انتهت مباراة الكركيت",
-            "━━━━━━━━━━━━",
-            f"⚔️ نقاط الهجوم: {attack_score}",
-            f"🛡️ نقاط الدفاع: {defense_score}",
-            f"👥 اللاعبون في كل غرفة: {match.get('target_players', 1)}",
-            f"👑 الفائز: {winner}",
-        ]
-        if awarded:
-            lines += [
-                f"💰 جائزة المباراة: {int(data.get('prize_pool') or CRICKET_PRIZE):,} نقطة",
-                "🎁 تم تقسيم الجائزة بالتساوي على لاعبي الفريق الفائز:",
-            ]
-            lines.extend(f"• @{name} +{amount:,} نقطة" for name, amount in awarded)
-        elif winner_team == "tie":
-            lines.append("🤝 تعادل — لا تُصرف الجائزة في هذه المباراة.")
-        scoreboard = {
-            "title": "🏏 نتيجة مباراة الكركيت",
-            "attack": {
-                "name": self._room_for_team(match, "attack").get("name", "فريق الهجوم") if self._room_for_team(match, "attack") else "فريق الهجوم",
-                "score": attack_score,
-                "players": list((match.get("player_stats") or {}).get("attack", {}).values()),
-            },
-            "defense": {
-                "name": self._room_for_team(match, "defense").get("name", "فريق الدفاع") if self._room_for_team(match, "defense") else "فريق الدفاع",
-                "score": defense_score,
-                "players": list((match.get("player_stats") or {}).get("defense", {}).values()),
-            },
-            "winner": winner,
-            "winner_team": winner_team,
-            "prize": int(data.get("prize_pool") or CRICKET_PRIZE),
-            "awards": [{"username": name, "points": amount} for name, amount in awarded],
+        teams = match.get("teams") or {}
+        player_scores = {str(k).lstrip("@"): int(v) for k, v in (match.get("player_scores") or {}).items()}
+        prize = 200_000
+
+        team_rooms: dict[str, dict[str, Any] | None] = {
+            "attack": self._room_for_team(match, "attack"),
+            "defense": self._room_for_team(match, "defense"),
         }
-        self._emit(data, participants, "\n".join(lines), scoreboard=scoreboard)
+        if match.get("mode") == "solo":
+            human_team = next((value for key, value in teams.items() if key != BOT_TEAM_KEY), "attack")
+            human_room = team_rooms.get(human_team)
+            human_players = [str(p).lstrip("@") for p in (human_room or {}).get("players", []) if str(p).strip()]
+            bot_players = ["بوت S-Boot"]
+            winner = "تعادل" if winner_team == "tie" else ("الفريق البشري" if winner_team == human_team else "بوت S-Boot")
+            winning_players = human_players if winner_team == human_team else []
+            team1_name, team2_name = "الفريق البشري", "S-Boot"
+            team1_players, team2_players = human_players, bot_players
+            team1_score = attack_score if human_team == "attack" else defense_score
+            team2_score = defense_score if human_team == "attack" else attack_score
+        else:
+            attack_room = team_rooms.get("attack") or {}
+            defense_room = team_rooms.get("defense") or {}
+            team1_name = str(attack_room.get("name") or "الفريق الأول")
+            team2_name = str(defense_room.get("name") or "الفريق الثاني")
+            team1_players = [str(p).lstrip("@") for p in attack_room.get("players", []) if str(p).strip()]
+            team2_players = [str(p).lstrip("@") for p in defense_room.get("players", []) if str(p).strip()]
+            team1_score, team2_score = attack_score, defense_score
+            winning_players = team1_players if winner_team == "attack" else team2_players if winner_team == "defense" else []
+            winner = "تعادل" if winner_team == "tie" else team1_name if winner_team == "attack" else team2_name
+
+        reward_lines = []
+        if winning_players:
+            base, remainder = divmod(prize, len(winning_players))
+            points = data.setdefault("points", {})
+            for index, player in enumerate(winning_players):
+                amount = base + (1 if index < remainder else 0)
+                key = _user_key(player)
+                points[key] = int(points.get(key, 0)) + amount
+                reward_lines.append(f"💰 @{player} +{amount:,} نقطة")
+
+        result_image = self._render_result_image(
+            match=match,
+            team1_name=team1_name, team1_players=team1_players,
+            team1_score=team1_score, team2_name=team2_name,
+            team2_players=team2_players, team2_score=team2_score,
+            player_scores=player_scores, winner=winner,
+            prize=prize if winning_players else 0,
+        )
+        images = (result_image,) if result_image else ()
+        self._emit(
+            data, participants,
+            "🏆 انتهت مباراة الكركيت\n━━━━━━━━━━━━\n"
+            f"🥇 {team1_name}: {team1_score} نقطة\n"
+            f"🥈 {team2_name}: {team2_score} نقطة\n"
+            f"👑 النتيجة: {winner}"
+            + ("\n🎁 الجائزة 200,000 نقطة\n" + "\n".join(reward_lines) if reward_lines else ""),
+            images,
+        )
         data["match"] = None
 
-    def points_for(self, username: str) -> int:
-        key = _user_key(username)
-        if not key:
-            return 0
-        data = self.state.load()
-        item = (data.get("points") or {}).get(key, {})
-        return int(item.get("points", 0)) if isinstance(item, dict) else 0
-
-    def leaderboard(self, limit: int = 10) -> list[tuple[str, int, int]]:
-        data = self.state.load()
-        rows = []
-        for item in (data.get("points") or {}).values():
-            if isinstance(item, dict):
-                rows.append((str(item.get("username") or ""), int(item.get("points", 0)), int(item.get("wins", 0))))
-        rows.sort(key=lambda row: (-row[1], -row[2], _user_key(row[0])))
-        return rows[:max(1, min(int(limit), 20))]
+    @staticmethod
+    def _render_result_image(
+        match: dict[str, Any],
+        team1_name: str, team1_players: list[str], team1_score: int,
+        team2_name: str, team2_players: list[str], team2_score: int,
+        player_scores: dict[str, int], winner: str, prize: int,
+    ) -> str | None:
+        try:
+            from cricket_result import render_result_image
+            return render_result_image(
+                match_id=str(match.get("id") or uuid.uuid4().hex),
+                team1_name=team1_name, team1_players=team1_players, team1_score=team1_score,
+                team2_name=team2_name, team2_players=team2_players, team2_score=team2_score,
+                player_scores=player_scores, winner=winner, prize=prize,
+            )
+        except Exception:
+            return None
 
     def submit_ball(self, room: str, sender: str, number: int) -> str | None:
         room_key = _key(room)
@@ -554,17 +568,23 @@ class CricketGame:
             team = teams.get(room_key)
             batting = str(match.get("batting_team") or "attack")
             bowling = "defense" if batting == "attack" else "attack"
-            side = "bat" if team == batting else "bowl"
-            expected = self._next_player(match, team, batting=(side == "bat"))
-            if _user_key(expected) != user_key:
-                role = "الضارب" if side == "bat" else "المخمّن"
-                return f"⏳ الدور الآن على @{expected} ({role})."
 
             if match.get("mode") == "solo":
+                human_key = next((key for key in teams if key != BOT_TEAM_KEY), room_key)
+                human_team = str(teams.get(human_key) or "attack")
+                if batting == human_team:
+                    expected = self._next_player(match, human_team, batting=True)
+                    side = "bat"
+                else:
+                    expected = self._next_player(match, human_team, batting=False)
+                    side = "bowl"
+                if _user_key(expected) != user_key:
+                    role = "الضارب" if side == "bat" else "المخمّن"
+                    return f"⏳ الدور الآن على @{expected} ({role})."
                 bot_value = random.randint(0, 6)
                 human_choice = {"value": value, "room_key": room_key, "room": participant["name"], "sender": username}
                 bot_choice = {"value": bot_value, "room_key": BOT_TEAM_KEY, "room": "بوت S-Boot", "sender": "بوت S-Boot"}
-                bat_choice, bowl_choice = (human_choice, bot_choice) if side == "bat" else (bot_choice, human_choice)
+                bat_choice, bowl_choice = (human_choice, bot_choice) if batting == human_team else (bot_choice, human_choice)
                 return self._resolve_ball(data, match, participants, bat_choice, bowl_choice)
 
             choices = match.setdefault("choices", {})
@@ -596,27 +616,13 @@ class CricketGame:
         bowling = "defense" if batting == "attack" else "attack"
         bat_value, bowl_value = int(bat_choice["value"]), int(bowl_choice["value"])
         ball_no = int(match.get("balls", 0)) + 1
-        player_stats = match.setdefault("player_stats", {"attack": {}, "defense": {}})
-        bat_sender = str(bat_choice.get("sender") or bat_choice.get("room") or "اللاعب").strip().lstrip("@")
-        bowl_sender = str(bowl_choice.get("sender") or bowl_choice.get("room") or "المخمّن").strip().lstrip("@")
-        bat_key = _user_key(bat_sender)
-        bowl_key = _user_key(bowl_sender)
-        batting_stats = player_stats.setdefault(batting, {})
-        bowling_stats = player_stats.setdefault(bowling, {})
-        batter_stat = batting_stats.setdefault(bat_key, {"username": bat_sender, "runs": 0, "balls": 0, "wickets": 0, "outs": 0})
-        bowler_stat = bowling_stats.setdefault(bowl_key, {"username": bowl_sender, "runs": 0, "balls": 0, "wickets": 0, "outs": 0})
-        batter_stat["username"] = bat_sender
-        bowler_stat["username"] = bowl_sender
-        batter_stat["balls"] = int(batter_stat.get("balls", 0)) + 1
         wickets = match.setdefault("wickets", {"attack": 0, "defense": 0})
         scores = match.setdefault("scores", {"attack": 0, "defense": 0})
-        images = [f"cricket_number_{bat_value}.png"]
+        images = [f"cricket_ball_{bat_value}.png"]
         if bat_value == bowl_value:
             wickets[batting] = int(wickets.get(batting, 0)) + 1
             match["wicket_streak"] = int(match.get("wicket_streak", 0)) + 1
             out_name = str(bat_choice.get("sender") or "اللاعب")
-            batter_stat["outs"] = int(batter_stat.get("outs", 0)) + 1
-            bowler_stat["wickets"] = int(bowler_stat.get("wickets", 0)) + 1
             match.setdefault("out_players", {"attack": [], "defense": []}).setdefault(batting, []).append(out_name)
             outcome = f"ويكيت! خرج @{out_name}."
             if int(match.get("innings", 1)) == 1 and ball_no == 1 and int(wickets[batting]) == 1:
@@ -628,8 +634,10 @@ class CricketGame:
         else:
             match["wicket_streak"] = 0
             scores[batting] = int(scores.get(batting, 0)) + bat_value
-            batter_stat["runs"] = int(batter_stat.get("runs", 0)) + bat_value
-            outcome = f"سجّل @{bat_choice.get('sender') or bat_choice['room']} {bat_value} نقطة." if bat_value else "كرة بلا نقاط؛ لا يوجد ويكيت."
+            scorer = str(bat_choice.get("sender") or bat_choice.get("room") or "اللاعب").strip().lstrip("@")
+            player_scores = match.setdefault("player_scores", {})
+            player_scores[scorer] = int(player_scores.get(scorer, 0)) + bat_value
+            outcome = f"سجّل @{scorer} {bat_value} نقطة." if bat_value else "كرة بلا نقاط؛ لا يوجد ويكيت."
 
         match["balls"] = ball_no
         match["choices"] = {}
@@ -642,7 +650,6 @@ class CricketGame:
             f"🏏 الشوط {match.get('innings', 1)} — الكرة {ball_no}/{self.BALLS_PER_INNINGS}\n"
             f"⚔️ الضارب @{bat_choice.get('sender') or bat_choice['room']} اختار {bat_value} | "
             f"🛡️ المخمّن @{bowl_choice.get('sender') or bowl_choice['room']} اختار {bowl_value}\n"
-            f"🖼️ صورة الرقم: {bat_value}\n"
             f"{outcome}\n📊 النتيجة — الهجوم: {scores.get('attack', 0)} | الدفاع: {scores.get('defense', 0)}"
             f"\n🚫 ويكيت هذا الشوط: {current_wickets}/{team_size}"
         )
@@ -678,6 +685,18 @@ class CricketGame:
 
         self._emit(data, participants, text + "\n" + self._turn_prompt(match), tuple(images))
         return None
+
+    def get_points(self, username: str) -> int:
+        key = _user_key(username)
+        data = self.state.load()
+        return int((data.get("points") or {}).get(key, 0)) if key else 0
+
+    def leaderboard(self, limit: int = 10) -> list[tuple[str, int]]:
+        data = self.state.load()
+        points = data.get("points") or {}
+        rows = [(str(name), int(value)) for name, value in points.items()]
+        rows.sort(key=lambda item: (-item[1], item[0]))
+        return rows[:max(1, int(limit))]
 
     def current(self) -> dict[str, Any] | None:
         data = self.state.load()
