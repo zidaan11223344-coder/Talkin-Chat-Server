@@ -178,9 +178,10 @@ class RestrictedTalkinBot(TalkinBot):
             "l@m / l@a / l@o / l@b — قوائم الغرفة\n"
             "l@mas — عرض الماسترات\n"
             "mas@اسم — إضافة ماستر مساعد | umas@اسم — إزالته\n\n"
-            "🏏 الكركيت: .cr 1 تشغيل | .cr 0 إيقاف\n"
-            "كركيت 2 — مباراة تنتظر غرفتين | join — انضمام\n"
-            "1 هجوم / 2 دفاع؛ بعد البداية يلعب الفريقان بالأرقام 0–6\n\n"
+            "🏏 الكركيت: .cr 1 ثم اختر 1–4 لاعبين لكل غرفة | .cr 0 إيقاف\n"
+            "كل لاعب يرسل Join؛ عند لاعب واحد اكتب bot لمواجهة بوت الغرفة المتحكم،\n"
+            "أو انتظر Join من غرفة أخرى. تختار كل غرفة 1 هجوم أو 2 دفاع.\n"
+            "الأدوار تتناوب، واللاعب المطلوب يرسل رقمًا من 0 إلى 6.\n\n"
             "⚠️ إدارة الأوامر للماستر المسجّل فقط."
         )
 
@@ -383,28 +384,61 @@ class RestrictedTalkinBot(TalkinBot):
             if not self._is_master(sender):
                 self.send_room_text(room, "🔒 تشغيل وإيقاف الكركيت للماستر فقط.")
                 return True
-            self.send_room_text(room, self._cricket.set_enabled(room, toggle.group(1) == "1"))
+            if toggle.group(1) == "1":
+                self._cricket.set_enabled(room, True)
+                error = self._cricket.begin_setup(room)
+                if error:
+                    self.send_room_text(room, error)
+            else:
+                self.send_room_text(room, self._cricket.set_enabled(room, False))
             self._deliver_cricket_events()
             return True
-        start = re.fullmatch(r"(?:\.?cricket|كركيت|كريكت)\s+([2-8])", low)
+        start = re.fullmatch(r"(?:\.?cricket|كركيت|كريكت)\s+([1-4])", low)
         if start:
+            if not self._is_master(sender):
+                self.send_room_text(room, "🔒 بدء المباراة واختيار عدد اللاعبين للماستر فقط.")
+                return True
             error = self._cricket.start(room, int(start.group(1)))
             if error:
                 self.send_room_text(room, error)
             self._deliver_cricket_events()
             return True
-        if low in {"join", "انضمام"}:
-            error = self._cricket.join(room)
+        match = self._cricket.current()
+        if isinstance(match, dict) and match.get("stage") == "setup" and low in {"1", "2", "3", "4"}:
+            if not self._is_master(sender):
+                self.send_room_text(room, "🔒 اختيار عدد اللاعبين للماستر فقط.")
+                return True
+            error = self._cricket.select_player_count(room, int(low))
             if error:
                 self.send_room_text(room, error)
             self._deliver_cricket_events()
             return True
-        match = self._cricket.current()
+        if low in {"bot", "بوت", "ضد البوت", "solo", "vs bot"} and isinstance(match, dict) and match.get("stage") == "lobby":
+            error = self._cricket.play_bot(room, sender)
+            if error:
+                self.send_room_text(room, error)
+            self._deliver_cricket_events()
+            return True
+        if low in {"join", "انضمام"}:
+            error = self._cricket.join(room, sender)
+            if error:
+                self.send_room_text(room, error)
+            self._deliver_cricket_events()
+            return True
         if low in {"كركيت", "كريكت", "cricket", ".cricket"}:
             if match:
-                self.send_room_text(room, f"🏏 مباراة الكركيت الحالية: {match.get('stage')} — الغرف {len(match.get('rooms', []))}/{match.get('target_rooms', 0)}.")
+                rooms = match.get("rooms", [])
+                target = match.get("target_players") or "لم يُحدد"
+                roster = " | ".join(f"{item.get('name')}: {len(item.get('players', []))}/{target}" for item in rooms)
+                self.send_room_text(room, f"🏏 حالة الكركيت: {match.get('stage')} — اللاعبون لكل غرفة: {target}.\n{roster}")
             else:
-                self.send_room_text(room, "🏏 شغّل اللعبة بـ .cr 1 ثم ابدأ: كركيت 2. الغرف الأخرى تنضم بكتابة join.")
+                if not self._is_master(sender):
+                    self.send_room_text(room, "🔒 بدء مباراة جديدة للماستر فقط. أرسل للماستر: .cr 1")
+                    return True
+                error = self._cricket.begin_setup(room)
+                if error:
+                    self.send_room_text(room, error)
+                self._deliver_cricket_events()
             return True
         if isinstance(match, dict) and match.get("stage") == "teams" and low in {"1", "2", "هجوم", "دفاع", "attack", "defense"}:
             team = "attack" if low in {"1", "هجوم", "attack"} else "defense"
@@ -515,7 +549,7 @@ class RestrictedTalkinBot(TalkinBot):
         """Dispatch only the requested management, protection, invite and list commands."""
         if self.role != "controller" or not self._is_own_room(room):
             return False
-        low = str(text or "").strip().casefold()
+        low = str(text or "").strip().casefold().translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
         if not low:
             return False
         match_state = self._cricket.current()
@@ -524,7 +558,9 @@ class RestrictedTalkinBot(TalkinBot):
             or re.fullmatch(r"(?:\.?cricket|كركيت|كريكت)(?:\s+[0-9٠-٩]+)?", low)
             or low in {"join", "انضمام"}
             or (isinstance(match_state, dict) and (
-                (match_state.get("stage") == "teams" and low in {"1", "2", "هجوم", "دفاع", "attack", "defense"})
+                (match_state.get("stage") == "setup" and low in {"1", "2", "3", "4"})
+                or (match_state.get("stage") == "lobby" and low in {"bot", "بوت", "ضد البوت", "solo", "vs bot"})
+                or (match_state.get("stage") == "teams" and low in {"1", "2", "هجوم", "دفاع", "attack", "defense"})
                 or (match_state.get("stage") == "live" and re.fullmatch(r"[0-6٠-٦]", low))
             ))
         )

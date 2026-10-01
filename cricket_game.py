@@ -1,6 +1,7 @@
-"""Persistent, cross-room cricket matches shared by S-Boot controller bots."""
+"""Persistent cross-room cricket with player rosters and an optional S-Boot opponent."""
 from __future__ import annotations
 
+import random
 import time
 import uuid
 from pathlib import Path
@@ -13,6 +14,7 @@ ASSET_FILES = tuple(f"cricket_ball_{number}.png" for number in range(1, 7)) + (
     "cricket_duck.png",
     "cricket_hattrick.png",
 )
+BOT_TEAM_KEY = "__sboot_cricket_bot__"
 
 
 def _blank() -> dict[str, Any]:
@@ -23,13 +25,17 @@ def _key(room: str) -> str:
     return normalize(room)
 
 
-class CricketGame:
-    """File-locked state machine; each controller bot delivers events to its room."""
+def _user_key(username: str) -> str:
+    return normalize(str(username or "").strip().lstrip("@"))
 
-    MIN_ROOMS = 2
-    MAX_ROOMS = 8
+
+class CricketGame:
+    """File-locked state machine; controller bots deliver events to their own rooms."""
+
+    MIN_PLAYERS = 1
+    MAX_PLAYERS = 4
+    ROOM_TEAMS = 2
     BALLS_PER_INNINGS = 6
-    WICKETS_PER_INNINGS = 3
     EVENT_HISTORY = 5000
 
     def __init__(self, root: str | Path):
@@ -39,10 +45,13 @@ class CricketGame:
         self.state = JsonState(path, _blank)
 
     @staticmethod
-    def _participants(match: dict[str, Any]) -> list[dict[str, str]]:
-        return [x for x in match.get("rooms", []) if isinstance(x, dict) and x.get("key") and x.get("name")]
+    def _participants(match: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            item for item in match.get("rooms", [])
+            if isinstance(item, dict) and item.get("key") and item.get("name")
+        ]
 
-    def _emit(self, data: dict[str, Any], rooms: list[dict[str, str]], text: str, images: tuple[str, ...] = ()) -> None:
+    def _emit(self, data: dict[str, Any], rooms: list[dict[str, Any]], text: str, images: tuple[str, ...] = ()) -> None:
         events = data.setdefault("events", [])
         for participant in rooms:
             data["next_event_id"] = int(data.get("next_event_id", 0)) + 1
@@ -57,7 +66,7 @@ class CricketGame:
         if len(events) > self.EVENT_HISTORY:
             del events[:-self.EVENT_HISTORY]
 
-    def enabled(self, room: str) -> bool:
+    def enabled(self, room: str = "") -> bool:
         data = self.state.load()
         return bool(data.get("enabled", bool(data.get("enabled_rooms") or {})))
 
@@ -71,8 +80,8 @@ class CricketGame:
             data["enabled_rooms"] = {}
             match = data.get("match")
             if enabled:
-                return f"✅ تم تشغيل الكركيت على مستوى السيرفر من غرفة {room_name}. يمكن لأي غرفة بوت متحكم الانضمام. اكتب كركيت 2 لفتح مباراة."
-            participants = self._participants(match or {}) if isinstance(match, dict) else []
+                return f"✅ تم تشغيل الكركيت على مستوى السيرفر من غرفة {room_name}."
+            participants = self._participants(match) if isinstance(match, dict) else []
             if isinstance(match, dict):
                 other_rooms = [item for item in participants if item["key"] != room_key]
                 self._emit(data, other_rooms, f"⛔ أوقفت غرفة {room_name} اللعبة؛ أُلغيت المباراة.")
@@ -81,115 +90,247 @@ class CricketGame:
 
         return self.state.mutate(mutate)
 
-    def start(self, room: str, room_count: int) -> str | None:
+    @staticmethod
+    def _new_match(room_name: str, room_key: str, stage: str, player_count: int | None = None) -> dict[str, Any]:
+        match: dict[str, Any] = {
+            "id": uuid.uuid4().hex,
+            "stage": stage,
+            "created_at": time.time(),
+            "setup_room": room_key,
+            "target_players": player_count,
+            "rooms": [{"key": room_key, "name": room_name, "players": []}],
+            "mode": "rooms",
+            "teams": {},
+            "innings": 1,
+            "batting_team": "attack",
+            "balls": 0,
+            "scores": {"attack": 0, "defense": 0},
+            "wickets": {"attack": 0, "defense": 0},
+            "out_players": {"attack": [], "defense": []},
+            "turns": {"attack": 0, "defense": 0},
+            "wicket_streak": 0,
+            "choices": {},
+        }
+        return match
+
+    def begin_setup(self, room: str) -> str | None:
         room_name, room_key = str(room or "").strip(), _key(room)
-        try:
-            count = int(room_count)
-        except (TypeError, ValueError):
-            return "❌ اكتب عدد الغرف المشاركة من 2 إلى 8، مثال: كركيت 2."
-        if not self.MIN_ROOMS <= count <= self.MAX_ROOMS:
-            return "❌ عدد الغرف المشاركة يجب أن يكون من 2 إلى 8."
 
         def mutate(data: dict[str, Any]) -> str | None:
-            if not bool(data.get("enabled", bool(data.get("enabled_rooms") or {}))):
-                return "⛔ اللعبة متوقفة على مستوى السيرفر. شغّلها بالأمر .cr 1 من أي غرفة متحكمة."
+            if not data.get("enabled"):
+                return "⛔ شغّل اللعبة أولاً بالأمر .cr 1."
             if isinstance(data.get("match"), dict):
-                return "⏳ توجد مباراة مفتوحة بالفعل؛ اكتب join من غرفة أخرى أو انتظر انتهاء المباراة."
-            participant = {"key": room_key, "name": room_name}
-            match = {
-                "id": uuid.uuid4().hex,
-                "stage": "lobby",
-                "created_at": time.time(),
-                "target_rooms": count,
-                "rooms": [participant],
-                "teams": {},
-                "innings": 1,
-                "batting_team": "attack",
-                "balls": 0,
-                "scores": {"attack": 0, "defense": 0},
-                "wickets": {"attack": 0, "defense": 0},
-                "wicket_streak": 0,
-                "choices": {},
-            }
+                return "⏳ توجد مباراة/قائمة انتظار مفتوحة بالفعل. أرسل Join للانضمام أو انتظر انتهائها."
+            match = self._new_match(room_name, room_key, "setup")
             data["match"] = match
-            self._emit(data, [participant],
-                       f"🏏 فُتحت لعبة الكركيت في غرفة {room_name}.\n"
-                       f"👥 المطلوب: {count} غرف. انتظر انضمام الغرف الأخرى بكتابة join أو انضمام.\n"
-                       "بعد اكتمال العدد يختار كل فريق: 1 هجوم أو 2 دفاع.")
+            self._emit(
+                data,
+                self._participants(match),
+                "🏏 إعداد مباراة الكركيت\n"
+                "اختر عدد اللاعبين في كل غرفة بإرسال رقم من 1 إلى 4.\n"
+                "بعدها يرسل كل لاعب Join. عند اختيار لاعب واحد يمكنك كتابة bot لمواجهة بوت S-Boot، "
+                "أو تنتظر لاعبًا من غرفة أخرى.",
+            )
             return None
 
         return self.state.mutate(mutate)
 
-    def join(self, room: str) -> str | None:
+    def select_player_count(self, room: str, player_count: int) -> str | None:
+        room_key = _key(room)
+        try:
+            count = int(player_count)
+        except (TypeError, ValueError):
+            return "❌ اختر 1 أو 2 أو 3 أو 4 لاعبين لكل غرفة."
+        if not self.MIN_PLAYERS <= count <= self.MAX_PLAYERS:
+            return "❌ عدد اللاعبين في كل غرفة يجب أن يكون من 1 إلى 4."
+
+        def mutate(data: dict[str, Any]) -> str | None:
+            match = data.get("match")
+            if not isinstance(match, dict) or match.get("stage") != "setup":
+                return "📭 لا توجد لعبة تنتظر اختيار عدد اللاعبين."
+            if room_key != str(match.get("setup_room") or ""):
+                return "🔒 اختيار عدد اللاعبين متاح في غرفة بدء اللعبة فقط."
+            match["target_players"] = count
+            match["stage"] = "lobby"
+            room_name = self._participants(match)[0]["name"]
+            self._emit(
+                data,
+                self._participants(match),
+                f"👥 تم اختيار {count} لاعب(ين) في كل فريق.\n"
+                f"📍 غرفة البداية: {room_name}. على كل لاعب يريد المشاركة أن يرسل Join في غرفته.\n"
+                "لاعب واحد: اكتب bot للعب مع S-Boot، أو انتظر لاعبًا من غرفة أخرى.\n"
+                "بعد اكتمال لاعبي الغرفتين، تختار كل غرفة 1 للهجوم أو 2 للدفاع.",
+            )
+            return None
+
+        return self.state.mutate(mutate)
+
+    def start(self, room: str, player_count: int) -> str | None:
+        """Open a lobby directly; retained for the `cricket N` command."""
         room_name, room_key = str(room or "").strip(), _key(room)
+        try:
+            count = int(player_count)
+        except (TypeError, ValueError):
+            return "❌ اكتب عدد اللاعبين في كل غرفة من 1 إلى 4."
+        if not self.MIN_PLAYERS <= count <= self.MAX_PLAYERS:
+            return "❌ عدد اللاعبين في كل غرفة يجب أن يكون من 1 إلى 4."
 
         def mutate(data: dict[str, Any]) -> str | None:
             if not bool(data.get("enabled", bool(data.get("enabled_rooms") or {}))):
-                return "⛔ شغّل الكركيت على مستوى السيرفر بالأمر .cr 1 أولاً، ثم اكتب join."
+                return "⛔ اللعبة متوقفة على مستوى السيرفر. شغّلها بالأمر .cr 1 أولاً."
+            if isinstance(data.get("match"), dict):
+                return "⏳ توجد مباراة مفتوحة بالفعل؛ أرسل Join للانضمام أو انتظر انتهائها."
+            match = self._new_match(room_name, room_key, "lobby", count)
+            data["match"] = match
+            self._emit(
+                data,
+                self._participants(match),
+                f"🏏 فُتحت مباراة الكركيت في {room_name} — {count} لاعب(ين) لكل غرفة.\n"
+                "كل لاعب يرسل Join في غرفته. لغرفة أخرى: أرسلوا Join أيضًا.\n"
+                "إذا كان العدد لاعبًا واحدًا وتريد اللعب مع بوت S-Boot، اكتب bot.",
+            )
+            return None
+
+        return self.state.mutate(mutate)
+
+    def _maybe_start_teams(self, data: dict[str, Any], match: dict[str, Any]) -> bool:
+        rooms = self._participants(match)
+        target = int(match.get("target_players") or 0)
+        if match.get("mode") == "solo":
+            if len(rooms) == 1 and len(rooms[0].get("players", [])) == 1:
+                match["stage"] = "teams"
+                self._emit(
+                    data,
+                    rooms,
+                    "🤖 انضم بوت S-Boot خصمًا لك. اختر دورك: 1 للهجوم أو 2 للدفاع؛ "
+                    "والبوت يأخذ الدور الآخر تلقائيًا.",
+                )
+                return True
+            return False
+        if len(rooms) == self.ROOM_TEAMS and target > 0 and all(
+            len(item.get("players", [])) >= target for item in rooms
+        ):
+            match["stage"] = "teams"
+            self._emit(
+                data,
+                rooms,
+                f"✅ اكتمل الفريقان ({target} لاعب(ين) في كل غرفة).\n"
+                "تختار كل غرفة دورها: 1 للهجوم أو 2 للدفاع. يجب أن يكون هناك فريق من كل نوع.",
+            )
+            return True
+        return False
+
+    def join(self, room: str, sender: str = "") -> str | None:
+        room_name, room_key = str(room or "").strip(), _key(room)
+        username = str(sender or "").strip().lstrip("@")
+        user_key = _user_key(username)
+        if not user_key:
+            return "❌ تعذر تحديد اسم اللاعب؛ أرسل Join من حسابك داخل الغرفة."
+
+        def mutate(data: dict[str, Any]) -> str | None:
+            if not data.get("enabled"):
+                return "⛔ شغّل الكركيت على مستوى السيرفر بالأمر .cr 1 أولاً."
             match = data.get("match")
             if not isinstance(match, dict) or match.get("stage") != "lobby":
-                return "📭 لا توجد لعبة تنتظر الانضمام الآن."
+                return "📭 لا توجد قائمة لاعبين مفتوحة الآن."
+            target = int(match.get("target_players") or 0)
+            if target < self.MIN_PLAYERS or target > self.MAX_PLAYERS:
+                return "⏳ انتظر اختيار عدد اللاعبين أولاً."
             participants = self._participants(match)
-            if any(x["key"] == room_key for x in participants):
-                return "✅ هذه الغرفة منضمة بالفعل إلى اللعبة."
-            if len(participants) >= int(match.get("target_rooms", 0)):
-                return "⛔ اكتمل عدد الغرف المطلوبة لهذه المباراة."
-            participant = {"key": room_key, "name": room_name}
-            participants.append(participant)
-            match["rooms"] = participants
-            full = len(participants) >= int(match.get("target_rooms", 0))
-            if full:
-                match["stage"] = "teams"
-                text = (
-                    f"✅ انضمت غرفة {room_name} واكتمل العدد ({len(participants)}/{match['target_rooms']}).\n"
-                    "⚔️ كل غرفة تختار فريقها: أرسل 1 للهجوم أو 2 للدفاع.\n"
-                    "يجب أن يكون هناك فريق هجوم وفريق دفاع."
+            if any(_user_key(player) == user_key for item in participants for player in item.get("players", [])):
+                return f"✅ @{username} مسجل بالفعل في المباراة."
+            participant = next((item for item in participants if item["key"] == room_key), None)
+            if participant is None:
+                if len(participants) >= self.ROOM_TEAMS:
+                    return "⛔ اكتمل عدد الغرف؛ المباراة بين غرفتين فقط."
+                participant = {"key": room_key, "name": room_name, "players": []}
+                participants.append(participant)
+                match["rooms"] = participants
+            players = participant.setdefault("players", [])
+            if len(players) >= target:
+                return f"⛔ اكتمل عدد لاعبي غرفة {room_name} ({target})."
+            players.append(username)
+            started_teams = self._maybe_start_teams(data, match)
+            if not started_teams:
+                joined_rooms = len(participants)
+                player_summary = " | ".join(
+                    f"{item['name']}: {len(item.get('players', []))}/{target}"
+                    for item in participants
                 )
-            else:
-                text = f"✅ انضمت غرفة {room_name} ({len(participants)}/{match['target_rooms']}). بانتظار بقية الغرف؛ اكتبوا join."
-            self._emit(data, participants, text)
+                self._emit(
+                    data,
+                    participants,
+                    f"✅ انضم @{username}.\n👥 اللاعبون: {player_summary}\n"
+                    f"🏠 الغرف: {joined_rooms}/{self.ROOM_TEAMS}. أرسل Join لإكمال فريقك أو من الغرفة الأخرى.",
+                )
+            return None
+
+        return self.state.mutate(mutate)
+
+    def play_bot(self, room: str, sender: str) -> str | None:
+        room_name, room_key = str(room or "").strip(), _key(room)
+        username = str(sender or "").strip().lstrip("@")
+        user_key = _user_key(username)
+
+        def mutate(data: dict[str, Any]) -> str | None:
+            match = data.get("match")
+            if not data.get("enabled"):
+                return "⛔ شغّل الكركيت أولاً بالأمر .cr 1."
+            if not isinstance(match, dict) or match.get("stage") != "lobby":
+                return "📭 لا توجد مباراة تنتظر خصم البوت."
+            if int(match.get("target_players") or 0) != 1:
+                return "🤖 اللعب مع البوت متاح عند اختيار لاعب واحد لكل فريق فقط."
+            rooms = self._participants(match)
+            if len(rooms) != 1 or rooms[0]["key"] != room_key:
+                return "⛔ خصم البوت متاح في غرفة بدء المباراة قبل انضمام غرفة أخرى."
+            players = rooms[0].setdefault("players", [])
+            if players and not any(_user_key(player) == user_key for player in players):
+                return "⛔ يوجد لاعب مسجل بالفعل؛ أرسل Join بحسابه أو انتظر الغرفة الأخرى."
+            if not players:
+                if not user_key:
+                    return "❌ تعذر تحديد اسم اللاعب."
+                players.append(username)
+            match["mode"] = "solo"
+            self._maybe_start_teams(data, match)
             return None
 
         return self.state.mutate(mutate)
 
     def choose_team(self, room: str, team: str) -> str | None:
         room_key = _key(room)
-        team = "attack" if str(team).casefold() in {"attack", "1", "هجوم"} else "defense"
-        label = "الهجوم" if team == "attack" else "الدفاع"
+        team_value = str(team or "").casefold().strip()
+        if team_value in {"attack", "1", "هجوم"}:
+            team_value = "attack"
+        elif team_value in {"defense", "2", "دفاع"}:
+            team_value = "defense"
+        else:
+            return "❌ اختر 1 للهجوم أو 2 للدفاع."
+        label = self._team_label(team_value)
 
         def mutate(data: dict[str, Any]) -> str | None:
             match = data.get("match")
             if not isinstance(match, dict) or match.get("stage") != "teams":
                 return "📭 اللعبة لا تنتظر اختيار الفرق الآن."
             participants = self._participants(match)
-            participant = next((x for x in participants if x["key"] == room_key), None)
+            participant = next((item for item in participants if item["key"] == room_key), None)
             if participant is None:
-                return "⛔ هذه الغرفة ليست مشاركة في المباراة. اكتب join قبل اختيار الفريق."
-            match.setdefault("teams", {})[room_key] = team
-            teams = match["teams"]
+                return "⛔ هذه الغرفة ليست مشاركة في المباراة. أرسل Join أولاً."
+            teams = match.setdefault("teams", {})
+            teams[room_key] = team_value
+            if match.get("mode") == "solo":
+                teams[BOT_TEAM_KEY] = "defense" if team_value == "attack" else "attack"
+                self._start_live(data, match, participants)
+                return None
+
             both_sides = "attack" in teams.values() and "defense" in teams.values()
-            everyone_chose = all(x["key"] in teams for x in participants)
+            everyone_chose = all(item["key"] in teams for item in participants)
             if both_sides and everyone_chose:
-                match["stage"] = "live"
-                match["innings"] = 1
-                match["batting_team"] = "attack"
-                match["balls"] = 0
-                match["wicket_streak"] = 0
-                self._emit(
-                    data,
-                    participants,
-                    "🏏 بدأت المباراة! فريق الهجوم يضرب أولاً.\n"
-                    "🎯 في كل كرة: فريق الهجوم يرسل رقم 0–6، وفريق الدفاع يخمّن 0–6.\n"
-                    "إذا تطابق الرقمان يخرج اللاعب؛ وإذا اختلفا تُحسب نقاط الهجوم. أرسلوا الرقم الآن.",
-                )
+                self._start_live(data, match, participants)
             else:
-                missing = match["target_rooms"] - len(participants)
-                if missing:
-                    text = f"✅ اختارت غرفة {participant['name']} فريق {label}. ما زال ينقص {missing} غرفة للانضمام."
-                elif both_sides:
-                    text = f"✅ اختارت غرفة {participant['name']} فريق {label}. بانتظار اختيار بقية الغرف."
+                if both_sides:
+                    text = f"✅ اختارت غرفة {participant['name']} فريق {label}. بانتظار اختيار الغرفة الأخرى."
                 else:
-                    text = f"✅ اختارت غرفة {participant['name']} فريق {label}. يجب اختيار الفريق الآخر أيضًا؛ يمكن تغيير الاختيار بإرسال 1 أو 2."
+                    text = f"✅ اختارت غرفة {participant['name']} فريق {label}. يجب أن تختار الغرفة الأخرى الدور المقابل."
                 self._emit(data, participants, text)
             return None
 
@@ -199,8 +340,97 @@ class CricketGame:
     def _team_label(team: str) -> str:
         return "الهجوم" if team == "attack" else "الدفاع"
 
+    @staticmethod
+    def _room_for_team(match: dict[str, Any], team: str) -> dict[str, Any] | None:
+        for participant in CricketGame._participants(match):
+            if (match.get("teams") or {}).get(participant["key"]) == team:
+                return participant
+        return None
+
+    def _next_player(self, match: dict[str, Any], team: str, batting: bool) -> str:
+        participant = self._room_for_team(match, team)
+        if participant is None:
+            return "🤖 بوت S-Boot"
+        players = [str(item) for item in participant.get("players", []) if str(item).strip()]
+        if not players:
+            return participant["name"]
+        turns = match.setdefault("turns", {"attack": 0, "defense": 0})
+        start = int(turns.get(team, 0)) % len(players)
+        out = {_user_key(item) for item in match.get("out_players", {}).get(team, [])} if batting else set()
+        for offset in range(len(players)):
+            candidate = players[(start + offset) % len(players)]
+            if _user_key(candidate) not in out:
+                return candidate
+        return ""
+
+    def _turn_prompt(self, match: dict[str, Any]) -> str:
+        batting = str(match.get("batting_team") or "attack")
+        bowling = "defense" if batting == "attack" else "attack"
+        if match.get("mode") == "solo":
+            human_team = next(
+                (value for key, value in (match.get("teams") or {}).items() if key != BOT_TEAM_KEY),
+                "attack",
+            )
+            if human_team == batting:
+                return "🎯 دورك في الهجوم: أرسل رقمًا من 0 إلى 6، وسيختار بوت S-Boot تخمينه."
+            return "🛡️ دورك في الدفاع: أرسل رقمًا من 0 إلى 6 لتخمين ضربة بوت S-Boot."
+        batter = self._next_player(match, batting, batting=True)
+        bowler = self._next_player(match, bowling, batting=False)
+        return (
+            f"🎯 دور الضارب @{batter} من فريق {self._team_label(batting)}، "
+            f"ودور المخمّن @{bowler} من فريق {self._team_label(bowling)}.\n"
+            "يرسل كل منهما رقمًا من 0 إلى 6."
+        )
+
+    def _start_live(self, data: dict[str, Any], match: dict[str, Any], participants: list[dict[str, Any]]) -> None:
+        match["stage"] = "live"
+        match["innings"] = 1
+        match["batting_team"] = "attack"
+        match["balls"] = 0
+        match["scores"] = {"attack": 0, "defense": 0}
+        match["wickets"] = {"attack": 0, "defense": 0}
+        match["out_players"] = {"attack": [], "defense": []}
+        match["turns"] = {"attack": 0, "defense": 0}
+        match["wicket_streak"] = 0
+        match["choices"] = {}
+        self._emit(
+            data,
+            participants,
+            "🏏 بدأت المباراة! فريق الهجوم يضرب أولاً.\n" + self._turn_prompt(match),
+        )
+
+    def _team_player_count(self, match: dict[str, Any], team: str) -> int:
+        if team == BOT_TEAM_KEY:
+            return 1
+        participant = self._room_for_team(match, team)
+        return len(participant.get("players", [])) if participant else 1
+
+    def _finish(self, data: dict[str, Any], match: dict[str, Any], participants: list[dict[str, Any]]) -> None:
+        scores = match.get("scores") or {}
+        attack_score = int(scores.get("attack", 0))
+        defense_score = int(scores.get("defense", 0))
+        winner_team = "attack" if attack_score > defense_score else "defense" if defense_score > attack_score else "tie"
+        if winner_team == "tie":
+            winner = "تعادل"
+        else:
+            winner_key = next(
+                (key for key, value in (match.get("teams") or {}).items() if value == winner_team),
+                "",
+            )
+            winner = "🤖 بوت S-Boot" if winner_key == BOT_TEAM_KEY else f"فريق {self._team_label(winner_team)}"
+        self._emit(
+            data,
+            participants,
+            "🏆 انتهت مباراة الكركيت\n━━━━━━━━━━━━\n"
+            f"⚔️ نقاط الهجوم: {attack_score}\n🛡️ نقاط الدفاع: {defense_score}\n"
+            f"👥 اللاعبون في كل غرفة: {match.get('target_players', 1)}\n👑 الفائز: {winner}",
+        )
+        data["match"] = None
+
     def submit_ball(self, room: str, sender: str, number: int) -> str | None:
         room_key = _key(room)
+        username = str(sender or "").strip().lstrip("@")
+        user_key = _user_key(username)
         try:
             value = int(number)
         except (TypeError, ValueError):
@@ -213,100 +443,125 @@ class CricketGame:
             if not isinstance(match, dict) or match.get("stage") != "live":
                 return "📭 لا توجد كرة تنتظر الاختيارات الآن."
             participants = self._participants(match)
-            participant = next((x for x in participants if x["key"] == room_key), None)
+            participant = next((item for item in participants if item["key"] == room_key), None)
             if participant is None:
                 return "⛔ هذه الغرفة ليست مشاركة في المباراة."
-            team = (match.get("teams") or {}).get(room_key)
+            enrolled = {_user_key(player) for player in participant.get("players", [])}
+            if not user_key or user_key not in enrolled:
+                return "⛔ يجب أن تسجل أولاً بإرسال Join قبل اللعب."
+
+            teams = match.get("teams") or {}
+            team = teams.get(room_key)
             batting = str(match.get("batting_team") or "attack")
+            bowling = "defense" if batting == "attack" else "attack"
             side = "bat" if team == batting else "bowl"
+            expected = self._next_player(match, team, batting=(side == "bat"))
+            if _user_key(expected) != user_key:
+                role = "الضارب" if side == "bat" else "المخمّن"
+                return f"⏳ الدور الآن على @{expected} ({role})."
+
+            if match.get("mode") == "solo":
+                bot_value = random.randint(0, 6)
+                human_choice = {"value": value, "room_key": room_key, "room": participant["name"], "sender": username}
+                bot_choice = {"value": bot_value, "room_key": BOT_TEAM_KEY, "room": "بوت S-Boot", "sender": "بوت S-Boot"}
+                bat_choice, bowl_choice = (human_choice, bot_choice) if side == "bat" else (bot_choice, human_choice)
+                return self._resolve_ball(data, match, participants, bat_choice, bowl_choice)
+
             choices = match.setdefault("choices", {})
-            existing = choices.get(side)
-            if existing and existing.get("room_key") != room_key:
-                return "⏳ سجّلت غرفة أخرى من فريقك اختيار هذه الكرة بالفعل."
-            choices[side] = {"value": value, "room_key": room_key, "room": participant["name"], "sender": str(sender or "")}
+            if choices.get(side):
+                return "⏳ سجّل لاعب فريقك اختياره لهذه الكرة بالفعل."
+            choices[side] = {
+                "value": value,
+                "room_key": room_key,
+                "room": participant["name"],
+                "sender": username,
+            }
             if not (choices.get("bat") and choices.get("bowl")):
                 side_label = "الهجوم" if side == "bat" else "الدفاع"
-                self._emit(data, [participant], f"✅ سجّل @{sender} الرقم {value} لفريق {side_label}. بانتظار الفريق الآخر.")
+                self._emit(data, [participant], f"✅ سجّل @{username} الرقم {value} لفريق {side_label}. بانتظار الفريق الآخر.")
                 return None
-
-            bat_choice, bowl_choice = choices["bat"], choices["bowl"]
-            bat_value, bowl_value = int(bat_choice["value"]), int(bowl_choice["value"])
-            ball_no = int(match.get("balls", 0)) + 1
-            wickets = match.setdefault("wickets", {"attack": 0, "defense": 0})
-            scores = match.setdefault("scores", {"attack": 0, "defense": 0})
-            images = [f"cricket_ball_{ball_no}.png"]
-            if bat_value == bowl_value:
-                wickets[batting] = int(wickets.get(batting, 0)) + 1
-                match["wicket_streak"] = int(match.get("wicket_streak", 0)) + 1
-                outcome = "ويكيت! خرج لاعب الهجوم."
-                if ball_no == 1 and int(wickets[batting]) == 1:
-                    outcome += " 🦆 دَك من أول كرة!"
-                    images.append("cricket_duck.png")
-                if int(match["wicket_streak"]) == 3:
-                    outcome += " 🔥 هاتريك — ثلاث ويكيت متتالية!"
-                    images.append("cricket_hattrick.png")
-            else:
-                match["wicket_streak"] = 0
-                scores[batting] = int(scores.get(batting, 0)) + bat_value
-                outcome = f"سجّل فريق الهجوم {bat_value} نقطة." if bat_value else "كرة بلا نقاط؛ لا يوجد ويكيت."
-
-            match["balls"] = ball_no
-            match["choices"] = {}
-            board = (
-                f"\n📊 النتيجة — الهجوم: {scores.get('attack', 0)} | الدفاع: {scores.get('defense', 0)}"
-                f"\n🚫 الويكيت: {wickets.get(batting, 0)}/{self.WICKETS_PER_INNINGS}"
-            )
-            text = (
-                f"🏏 الكرة {ball_no}/{self.BALLS_PER_INNINGS}\n"
-                f"⚔️ @{bat_choice.get('sender') or bat_choice['room']} اختار {bat_value} | "
-                f"🛡️ @{bowl_choice.get('sender') or bowl_choice['room']} خمّن {bowl_value}\n"
-                f"{outcome}{board}"
-            )
-            self._emit(data, participants, text, tuple(images))
-
-            attack_score = int(scores.get("attack", 0))
-            defense_score = int(scores.get("defense", 0))
-            if int(match.get("innings", 1)) == 2 and defense_score > attack_score:
-                self._finish(data, match, participants)
-                return None
-
-            innings_over = (
-                ball_no >= self.BALLS_PER_INNINGS
-                or int(wickets.get(batting, 0)) >= self.WICKETS_PER_INNINGS
-            )
-            if innings_over:
-                if int(match.get("innings", 1)) == 1:
-                    match["innings"] = 2
-                    match["batting_team"] = "defense"
-                    match["balls"] = 0
-                    match["wickets"]["defense"] = 0
-                    match["wicket_streak"] = 0
-                    target = attack_score + 1
-                    self._emit(
-                        data,
-                        participants,
-                        f"🏁 انتهى الشوط الأول. هدف فريق الدفاع: {target} نقطة.\n"
-                        "الآن يضرب فريق الدفاع؛ أرسلوا أرقامكم 0–6.",
-                    )
-                else:
-                    self._finish(data, match, participants)
-            return None
+            return self._resolve_ball(data, match, participants, choices["bat"], choices["bowl"])
 
         return self.state.mutate(mutate)
 
-    def _finish(self, data: dict[str, Any], match: dict[str, Any], participants: list[dict[str, str]]) -> None:
-        scores = match.get("scores") or {}
+    def _resolve_ball(
+        self,
+        data: dict[str, Any],
+        match: dict[str, Any],
+        participants: list[dict[str, Any]],
+        bat_choice: dict[str, Any],
+        bowl_choice: dict[str, Any],
+    ) -> None:
+        batting = str(match.get("batting_team") or "attack")
+        bowling = "defense" if batting == "attack" else "attack"
+        bat_value, bowl_value = int(bat_choice["value"]), int(bowl_choice["value"])
+        ball_no = int(match.get("balls", 0)) + 1
+        wickets = match.setdefault("wickets", {"attack": 0, "defense": 0})
+        scores = match.setdefault("scores", {"attack": 0, "defense": 0})
+        images = [f"cricket_ball_{ball_no}.png"]
+        if bat_value == bowl_value:
+            wickets[batting] = int(wickets.get(batting, 0)) + 1
+            match["wicket_streak"] = int(match.get("wicket_streak", 0)) + 1
+            out_name = str(bat_choice.get("sender") or "اللاعب")
+            match.setdefault("out_players", {"attack": [], "defense": []}).setdefault(batting, []).append(out_name)
+            outcome = f"ويكيت! خرج @{out_name}."
+            if int(match.get("innings", 1)) == 1 and ball_no == 1 and int(wickets[batting]) == 1:
+                outcome += " 🦆 خرج من أول كرة — دَك!"
+                images.append("cricket_duck.png")
+            if int(match["wicket_streak"]) == 3:
+                outcome += " 🔥 هاتريك — ثلاث ويكيت متتالية!"
+                images.append("cricket_hattrick.png")
+        else:
+            match["wicket_streak"] = 0
+            scores[batting] = int(scores.get(batting, 0)) + bat_value
+            outcome = f"سجّل @{bat_choice.get('sender') or bat_choice['room']} {bat_value} نقطة." if bat_value else "كرة بلا نقاط؛ لا يوجد ويكيت."
+
+        match["balls"] = ball_no
+        match["choices"] = {}
+        turns = match.setdefault("turns", {"attack": 0, "defense": 0})
+        turns[batting] = int(turns.get(batting, 0)) + 1
+        turns[bowling] = int(turns.get(bowling, 0)) + 1
+        team_size = max(1, int(match.get("target_players") or 1))
+        current_wickets = int(wickets.get(batting, 0))
+        text = (
+            f"🏏 الشوط {match.get('innings', 1)} — الكرة {ball_no}/{self.BALLS_PER_INNINGS}\n"
+            f"⚔️ الضارب @{bat_choice.get('sender') or bat_choice['room']} اختار {bat_value} | "
+            f"🛡️ المخمّن @{bowl_choice.get('sender') or bowl_choice['room']} اختار {bowl_value}\n"
+            f"{outcome}\n📊 النتيجة — الهجوم: {scores.get('attack', 0)} | الدفاع: {scores.get('defense', 0)}"
+            f"\n🚫 ويكيت هذا الشوط: {current_wickets}/{team_size}"
+        )
         attack_score = int(scores.get("attack", 0))
         defense_score = int(scores.get("defense", 0))
-        winner = "فريق الهجوم" if attack_score > defense_score else "فريق الدفاع" if defense_score > attack_score else "تعادل"
-        self._emit(
-            data,
-            participants,
-            "🏆 انتهت مباراة الكركيت\n━━━━━━━━━━━━\n"
-            f"⚔️ نقاط الهجوم: {attack_score}\n🛡️ نقاط الدفاع: {defense_score}\n"
-            f"👑 النتيجة: {winner}",
-        )
-        data["match"] = None
+        if int(match.get("innings", 1)) == 2 and defense_score > attack_score:
+            self._emit(data, participants, text, tuple(images))
+            self._finish(data, match, participants)
+            return None
+
+        innings_over = ball_no >= self.BALLS_PER_INNINGS or current_wickets >= self._team_player_count(match, batting)
+        if innings_over:
+            self._emit(data, participants, text, tuple(images))
+            if int(match.get("innings", 1)) == 1:
+                match["innings"] = 2
+                match["batting_team"] = "defense"
+                match["balls"] = 0
+                match["wickets"]["defense"] = 0
+                match.setdefault("out_players", {})["defense"] = []
+                match["turns"] = {"attack": 0, "defense": 0}
+                match["wicket_streak"] = 0
+                match["choices"] = {}
+                target = attack_score + 1
+                self._emit(
+                    data,
+                    participants,
+                    f"🏁 انتهى الشوط الأول. هدف فريق الدفاع: {target} نقطة.\n"
+                    "تبدّل الهجوم والدفاع.\n" + self._turn_prompt(match),
+                )
+            else:
+                self._finish(data, match, participants)
+            return None
+
+        self._emit(data, participants, text + "\n" + self._turn_prompt(match), tuple(images))
+        return None
 
     def current(self) -> dict[str, Any] | None:
         data = self.state.load()
@@ -317,9 +572,15 @@ class CricketGame:
         room_key = _key(room)
         data = self.state.load()
         events = data.get("events", [])
-        return max((int(x.get("id", 0)) for x in events if isinstance(x, dict) and x.get("room_key") == room_key), default=0)
+        return max(
+            (int(item.get("id", 0)) for item in events if isinstance(item, dict) and item.get("room_key") == room_key),
+            default=0,
+        )
 
     def events_after(self, room: str, event_id: int) -> list[dict[str, Any]]:
         room_key = _key(room)
         data = self.state.load()
-        return [dict(x) for x in data.get("events", []) if isinstance(x, dict) and x.get("room_key") == room_key and int(x.get("id", 0)) > int(event_id)]
+        return [
+            dict(item) for item in data.get("events", [])
+            if isinstance(item, dict) and item.get("room_key") == room_key and int(item.get("id", 0)) > int(event_id)
+        ]
