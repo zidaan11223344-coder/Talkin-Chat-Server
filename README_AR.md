@@ -120,6 +120,17 @@
    curl http://localhost:8080/health
    ```
 
+### النشر على Railway للاختبار
+
+1. أنشئ مشروعًا من مستودع GitHub العام واختر الفرع `main`. يكتشف Railway ملف `Dockerfile` الموجود في جذر المستودع ويستخدمه للبناء؛ أمره الافتراضي يشغّل `python app.py`.
+2. أضف **Volume** للخدمة واجعل مسار تركيبه `/data`، ثم عيّن `BOT_SERVER_DATA_DIR=/data`. مجلد Railway المركّب قابل للقراءة والكتابة ويحتفظ بالبيانات؛ ينشئ التطبيق المفتاح عند بدء الخدمة، لذلك لا تضع خطوة إنشاء المفتاح في مرحلة البناء.
+3. أضف المتغيرين `SERVER_BOT_ID` و`SERVER_BOT_PASSWORD` من صفحة Variables، واترك `STATE_ENCRYPTION_KEY` فارغًا كي يُنشأ مرة واحدة داخل الـVolume. Railway يمرر `PORT` تلقائيًا والتطبيق يستمع إليه؛ اضبط Healthcheck Path على `/health`.
+4. استخدم نسخة واحدة من الخدمة؛ التطبيق نفسه يشغّل حساب السيرفر وعمليات البوتات التابعة، وتشغيل نسخ متوازية قد يكرر اتصالات الحسابات. بعد النشر افتح عنوان Railway وأضف `/health` وتأكد من استجابة ناجحة ومن ظهور رسائل التشغيل في السجلات.
+
+**النقل لاحقًا إلى RavenHost:** أوقف خدمة Railway قبل النقل، وانسخ *كامل* محتوى `/data` إلى مجلد RavenHost دائم وقابل للكتابة، بما فيه `.state_encryption_key` وسجل البوتات ومجلدات `children` والملفات المشتركة. عيّن `BOT_SERVER_DATA_DIR` إلى المسار الجديد. لا تنشئ مفتاحًا جديدًا ولا تحذف المفتاح القديم؛ فكلمات مرور البوتات المخزنة تعتمد عليه. إذا كان `/data` للقراءة فقط في RavenHost، استخدم مسار التخزين الدائم الذي تسمح به المنصة.
+
+مراجع Railway الرسمية: [Dockerfile](https://docs.railway.com/guides/dockerfiles)، [Volumes](https://docs.railway.com/volumes)، [Healthchecks وPORT](https://docs.railway.com/deployments/healthchecks).
+
 لا توجد أي متغيرات Supabase مطلوبة لقبول الصداقة؛ قبول الطلبات يتم على اتصال Talkin الخاص بالحساب الأساسي.
 
 ## بنية المشروع
