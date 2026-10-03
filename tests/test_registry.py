@@ -76,6 +76,19 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(child_env["STATE_ENCRYPTION_KEY"], self.key)
         self.assertEqual(child_env["BOT_SERVER_DATA_DIR"], str(service.data_dir))
 
+    def test_registered_bots_are_restored_by_a_new_service_instance(self):
+        service = BotServerService(self.temp.name, self.key, "Admin", spawn=False)
+        record = service.registry.create(BotSpec("saved", "saved-secret", "Room", "controller", "master"))
+
+        restarted = BotServerService(self.temp.name, self.key, "Admin", spawn=False)
+        with patch.object(restarted, "start_record") as start_record:
+            restarted.restore()
+
+        start_record.assert_called_once()
+        restored = start_record.call_args.args[0]
+        self.assertEqual(restored["id"], record["id"])
+        self.assertEqual(restarted.registry.get(record["id"], include_password=True)["password"], "saved-secret")
+
     def test_restricted_runtime_handles_talkin_top_level_room_join_results(self):
         def process_response(payload, pending):
             bot = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
@@ -304,6 +317,23 @@ class RegistryTests(unittest.TestCase):
         controller.send_room_text = lambda *_args: None
         controller._deliver_cricket_events()
         self.assertIn(("Room A", "https://assets.test/cricket_number_1.png", "image"), delivered_media)
+
+    def test_duck_image_is_sent_when_a_player_is_out_on_their_first_ball(self):
+        game = CricketGame(self.temp.name)
+        game.set_enabled("Room A", True)
+        self.assertIsNone(game.start("Room A", 2))
+        self.assertIsNone(game.join("Room A", "alpha"))
+        self.assertIsNone(game.join("Room A", "beta"))
+
+        # Alpha scores first; beta is dismissed on ball two without scoring.
+        with patch("cricket_game.random.randint", side_effect=[2, 3]):
+            self.assertIsNone(game.submit_ball("Room A", "alpha", 1))
+            self.assertIsNone(game.submit_ball("Room A", "beta", 3))
+
+        events = game.events_after("Room A", 0)
+        duck_events = [event for event in events if "cricket_duck.png" in event["images"]]
+        self.assertEqual(len(duck_events), 1)
+        self.assertIn("بطّة", duck_events[0]["text"])
 
     def test_controller_commands_route_size_selection_and_solo_bot(self):
         controller = RestrictedTalkinBot.__new__(RestrictedTalkinBot)

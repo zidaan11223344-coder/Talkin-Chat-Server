@@ -7,6 +7,13 @@ from typing import Iterable
 
 from PIL import Image, ImageDraw, ImageFont
 
+try:
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+except ImportError:  # Keep older deployments readable until dependencies are installed.
+    arabic_reshaper = None
+    get_display = None
+
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = Path(os.getenv("CRICKET_MEDIA_DIR", str(ROOT / "generated_games")))
 FONT_CANDIDATES = (
@@ -38,12 +45,24 @@ def _latin_font(size: int):
 def _has_arabic(value: str) -> bool:
     return any("\u0600" <= ch <= "\u06ff" for ch in str(value))
 
+
+def _shape_rtl(value: str) -> str:
+    """Return shaped, visually ordered text for Pillow's left-to-right API."""
+    text = str(value)
+    if not _has_arabic(text) or arabic_reshaper is None or get_display is None:
+        return text
+    try:
+        return get_display(arabic_reshaper.reshape(text))
+    except Exception:
+        return text
+
+
 def _text(draw: ImageDraw.ImageDraw, xy, value: str, font, anchor="la", fill=(245, 247, 250), rtl: bool | None = None):
     if rtl is None:
         rtl = _has_arabic(value)
     try:
         if rtl:
-            draw.text(xy, value, font=font, fill=fill, anchor=anchor, direction="rtl", language="ar")
+            draw.text(xy, _shape_rtl(value), font=font, fill=fill, anchor=anchor)
         else:
             draw.text(xy, value, font=font, fill=fill, anchor=anchor)
     except Exception:

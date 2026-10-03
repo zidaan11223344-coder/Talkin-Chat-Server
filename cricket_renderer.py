@@ -13,6 +13,13 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+try:
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+except ImportError:  # Keep the renderer usable until dependencies are installed.
+    arabic_reshaper = None
+    get_display = None
+
 FONT_BOLD = "/usr/share/fonts/opentype/noto/NotoKufiArabic-Bold.ttf"
 FONT_REGULAR = "/usr/share/fonts/opentype/noto/NotoKufiArabic-Regular.ttf"
 
@@ -23,8 +30,19 @@ def _font(size: int, bold: bool = False):
     return ImageFont.truetype(preferred if os.path.exists(preferred) else fallback, size)
 
 
+def _shape_rtl(text: str) -> str:
+    """Shape Arabic glyphs and reorder bidi text for Pillow's left-to-right draw API."""
+    value = str(text)
+    if arabic_reshaper is None or get_display is None:
+        return value
+    try:
+        return get_display(arabic_reshaper.reshape(value))
+    except Exception:
+        return value
+
+
 def _rtl(draw: ImageDraw.ImageDraw, xy, text: str, font, fill, anchor="ra"):
-    draw.text(xy, str(text), font=font, fill=fill, anchor=anchor, direction="rtl", language="ar")
+    draw.text(xy, _shape_rtl(text), font=font, fill=fill, anchor=anchor)
 
 
 def _fit_name(name: str, limit: int = 18) -> str:

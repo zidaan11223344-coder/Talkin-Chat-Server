@@ -701,6 +701,7 @@ class CricketGame:
         ball_no = int(match.get("balls", 0)) + 1
         wickets = match.setdefault("wickets", {"attack": 0, "defense": 0})
         scores = match.setdefault("scores", {"attack": 0, "defense": 0})
+        player_scores = match.setdefault("player_scores", {})
         images = [f"cricket_number_{bat_value}.png"]
         out_name = str(bat_choice.get("sender") or "اللاعب").strip().lstrip("@")
         bowler_name = str(bowl_choice.get("sender") or "المدافع").strip().lstrip("@")
@@ -710,8 +711,9 @@ class CricketGame:
             match["wicket_streak"] = int(match.get("wicket_streak", 0)) + 1
             match.setdefault("out_players", {"attack": [], "defense": []}).setdefault(batting, []).append(out_name)
             outcome = f"💥 OUT — @{out_name}"
-            # First-ball dismissal = duck.
-            if ball_no == 1 and int(match.get("innings", 1)) == 1:
+            # A duck is a dismissal before the batter has scored, even when
+            # it happens after earlier balls by other players or in innings 2.
+            if int(player_scores.get(out_name, 0)) == 0:
                 outcome += " 🦆 بطّة"
                 images.append("cricket_duck.png")
             # Three consecutive wickets by the same bowler = hat-trick.
@@ -721,7 +723,6 @@ class CricketGame:
         else:
             match["wicket_streak"] = 0
             scores[batting] = int(scores.get(batting, 0)) + bat_value
-            player_scores = match.setdefault("player_scores", {})
             player_scores[out_name] = int(player_scores.get(out_name, 0)) + bat_value
             outcome = f"🏏 +{bat_value} نقطة"
 
