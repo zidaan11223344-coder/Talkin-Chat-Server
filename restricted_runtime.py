@@ -936,10 +936,34 @@ class RestrictedTalkinBot(TalkinBot):
             result = decode_result_message(message)
             result_type = str(result.get("type") or "").strip()
             room_value = str(result.get("value") or "").strip()
-            # Do NOT synthesize you_joined from a generic success response.
-            # A generic success only acknowledges the request packet; the
-            # authoritative proof of physical room membership is Talkin's
-            # room_event you_joined/you_rejoined.
+            # Talkin emits room-join outcomes as top-level ResultMessage types
+            # on some server builds. Match the base runtime's documented
+            # handling, but only treat success as a join confirmation when it
+            # matches a room that this child is currently joining.
+            join_result_types = {
+                "success", "room_unauthorized", "room_membership_required",
+                "room_full", "room_wrong_password", "room_needs_password",
+                "room_needs_captcha", "room_unauthorized_rejoin",
+                "room_membership_required_rejoin", "room_full_rejoin",
+                "room_wrong_password_rejoin", "room_needs_password_rejoin",
+                "room_needs_captcha_rejoin",
+            }
+            pending_joins = getattr(self, "_pending_room_joins", {})
+            pending_key = next(
+                (key for key in pending_joins if room_value and normalize(key) == normalize(room_value)),
+                None,
+            )
+            if result_type in join_result_types and pending_key is None and not room_value and len(pending_joins) == 1:
+                pending_key = next(iter(pending_joins))
+            if result_type in join_result_types and pending_key is not None and not result.get("room_event"):
+                confirmed_room = str(pending_joins[pending_key].get("room") or room_value).strip()
+                self.handle_room_event({
+                    "room_event": {
+                        1: "you_joined" if result_type == "success" else result_type,
+                        13: confirmed_room,
+                    },
+                    "uid": result.get("uid", ""),
+                })
             if result.get("room_event"):
                 self.handle_room_event(result)
             if result.get("users") or result.get("room_admin"):

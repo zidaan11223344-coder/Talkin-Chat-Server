@@ -44,6 +44,11 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(silent["role"], "silent")
         self.assertIn("بوت صامت", silent["profile_status"])
 
+    def test_controller_bots_can_be_registered_for_different_rooms(self):
+        first = self.registry.create(BotSpec("control_a", "pass-a", "Room A", "controller", "master"))
+        second = self.registry.create(BotSpec("control_b", "pass-b", "Room B", "controller", "master"))
+        self.assertEqual({first["room"], second["room"]}, {"Room A", "Room B"})
+
     def test_delegate_can_add_silent_bot_but_not_controller(self):
         self.registry.create(BotSpec("control", "pass", "Room", "controller", "master"))
         self.registry.add_delegate("Room", "master", "helper")
@@ -70,6 +75,32 @@ class RegistryTests(unittest.TestCase):
         child_env = popen.call_args.kwargs["env"]
         self.assertEqual(child_env["STATE_ENCRYPTION_KEY"], self.key)
         self.assertEqual(child_env["BOT_SERVER_DATA_DIR"], str(service.data_dir))
+
+    def test_restricted_runtime_handles_talkin_top_level_room_join_results(self):
+        def process_response(payload, pending):
+            bot = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
+            bot._pending_room_joins = pending
+            bot._pending_room_lists = {}
+            events = []
+            bot.handle_room_event = lambda result: events.append(result["room_event"])
+            with patch("restricted_runtime.decode_result_message", return_value=payload):
+                bot._process_message(None, b"test")
+            return events
+
+        joined = process_response(
+            {"type": "success", "value": "room a"},
+            {"Room A": {"room": "Room A"}},
+        )
+        self.assertEqual(joined, [{1: "you_joined", 13: "Room A"}])
+
+        failed = process_response(
+            {"type": "room_full", "value": ""},
+            {"Room A": {"room": "Room A"}},
+        )
+        self.assertEqual(failed, [{1: "room_full", 13: "Room A"}])
+
+        unrelated = process_response({"type": "success", "value": "Room A"}, {})
+        self.assertEqual(unrelated, [])
 
     def test_server_status_uses_blue_in_place_of_yellow(self):
         source = Path(__file__).resolve().parents[1] / "app.py"
