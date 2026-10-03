@@ -395,16 +395,35 @@ class RestrictedTalkinBot(TalkinBot):
                 text += f"\n… وبقية الأسماء: {omitted} (الإجمالي {len(names)}) لضيق حد رسالة Talkin."
         send(text)
 
+    def _cricket_public_base(self) -> str:
+        base = (
+            os.getenv("CRICKET_RESULT_BASE_URL", "").strip()
+            or os.getenv("CRICKET_PUBLIC_BASE_URL", "").strip()
+            or os.getenv("PUBLIC_BASE_URL", "").strip()
+            or os.getenv("RAVEN_PUBLIC_URL", "").strip()
+            or os.getenv("RAVEN_PUBLIC_DOMAIN", "").strip()
+        ).rstrip("/")
+        if base and not base.startswith(("http://", "https://")):
+            base = "https://" + base
+        return base
+
     def _cricket_asset_url(self, filename: str) -> str:
         filename = str(filename or "").strip()
+        # Static cricket assets (number/duck/hat-trick) must come from the
+        # repository assets so an old generated/public image cannot be reused.
+        # Only generated result cards use the server's public media endpoint.
+        if filename.startswith("cricket_number_") or filename.startswith("cricket_ball_") or filename in {"cricket_duck.png", "cricket_hattrick.png"}:
+            asset_base = (os.getenv("CRICKET_ASSET_BASE_URL", "").strip()
+                          or "https://raw.githubusercontent.com/zidaan11223344-coder/Talkin-Chat-Server/main/vendor/assets").rstrip("/")
+            return f"{asset_base}/{filename}"
+        base = self._cricket_public_base()
+        if base:
+            return f"{base}/cricket-media/{filename}"
         if filename.startswith("cricket_result_"):
-            base = (os.getenv("CRICKET_RESULT_BASE_URL", "").strip()
-                    or os.getenv("CRICKET_PUBLIC_BASE_URL", "").strip()
-                    or os.getenv("PUBLIC_BASE_URL", "").strip()).rstrip("/")
-            return f"{base}/cricket-media/{filename}" if base else filename
-        base = (os.getenv("CRICKET_ASSET_BASE_URL", "").strip()
-                or "https://raw.githubusercontent.com/zidaan11223344-coder/Talkin-Chat-Server/main/vendor/assets").rstrip("/")
-        return f"{base}/{filename}"
+            return filename
+        asset_base = (os.getenv("CRICKET_ASSET_BASE_URL", "").strip()
+                      or "https://raw.githubusercontent.com/zidaan11223344-coder/Talkin-Chat-Server/main/vendor/assets").rstrip("/")
+        return f"{asset_base}/{filename}"
 
     def _deliver_cricket_events(self) -> None:
         if self.role != "controller" or not self.target_room or not self._cricket_delivery_lock.acquire(blocking=False):
@@ -413,19 +432,22 @@ class RestrictedTalkinBot(TalkinBot):
             events = self._cricket.events_after(self.target_room, self._cricket_cursor)
             for event in events:
                 try:
+                    # A broadcast is only used for the first-team-complete
+                    # announcement. All later match events are room-scoped.
+                    destination = self.target_room
                     for filename in event.get("images", []):
-                        self.send_room_media(self.target_room, self._cricket_asset_url(filename), "image")
+                        self.send_room_media(destination, self._cricket_asset_url(filename), "image")
                     scoreboard = event.get("scoreboard")
                     if isinstance(scoreboard, dict):
-                        public_base = (os.getenv("CRICKET_PUBLIC_BASE_URL", "").strip() or os.getenv("PUBLIC_BASE_URL", "").strip()).rstrip("/")
+                        public_base = self._cricket_public_base()
                         if public_base:
                             try:
                                 media_path = render_scoreboard(scoreboard, self.registry_root / "cricket_media")
-                                self.send_room_media(self.target_room, f"{public_base}/cricket-media/{media_path.name}", "image")
+                                self.send_room_media(destination, f"{public_base}/cricket-media/{media_path.name}", "image")
                             except Exception as exc:
                                 self.log("[CRICKET] scoreboard render/delivery failed", repr(exc))
                     if event.get("text"):
-                        self.send_room_text(self.target_room, str(event["text"]))
+                        self.send_room_text(destination, str(event["text"]))
                     self._cricket_cursor = int(event.get("id", self._cricket_cursor))
                 except Exception as exc:
                     self.log("[CRICKET] event delivery failed", repr(exc))

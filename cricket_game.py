@@ -10,7 +10,7 @@ from typing import Any
 from cricket_state import JsonState, normalize
 
 
-ASSET_FILES = tuple(f"cricket_ball_{number}.png" for number in range(0, 7)) + (
+ASSET_FILES = tuple(f"cricket_number_{number}.png" for number in range(0, 7)) + (
     "cricket_duck.png",
     "cricket_hattrick.png",
 )
@@ -74,6 +74,22 @@ class CricketGame:
                 ],
                 "created_at": time.time(),
             })
+        if len(events) > self.EVENT_HISTORY:
+            del events[:-self.EVENT_HISTORY]
+
+    def _emit_broadcast(self, data: dict[str, Any], text: str) -> None:
+        """Emit one server-wide announcement. Every controller room can deliver it."""
+        events = data.setdefault("events", [])
+        data["next_event_id"] = int(data.get("next_event_id", 0)) + 1
+        events.append({
+            "id": data["next_event_id"],
+            "room": "",
+            "room_key": "",
+            "broadcast": True,
+            "text": str(text),
+            "images": [],
+            "created_at": time.time(),
+        })
         if len(events) > self.EVENT_HISTORY:
             del events[:-self.EVENT_HISTORY]
 
@@ -315,11 +331,12 @@ class CricketGame:
                         match["teams"] = {room_key: "attack", BOT_TEAM_KEY: "defense"}
                         self._start_live(data, match, participants)
                     else:
-                        # Setup mode remains open for a second room to join.
-                        self._emit(
-                            data, [participant],
-                            f"🏏 اكتمل الفريق الأول: {target} لاعبين\n"
-                            "🔗 الفريق الثاني يدخل من غرفته بإرسال Join.",
+                        # The first team has completed: announce once to every
+                        # controller room in the server. After the second room
+                        # joins, all further events remain room-scoped.
+                        self._emit_broadcast(
+                            data,
+                            f"🏏 بدأت لعبة الكركيت\n👥 عدد الفريق: {target}\n🔗 للانضمام أرسل Join",
                         )
             elif len(participants) == self.ROOM_TEAMS:
                 full = all(len(item.get("players", [])) >= target for item in participants)
@@ -684,7 +701,7 @@ class CricketGame:
         ball_no = int(match.get("balls", 0)) + 1
         wickets = match.setdefault("wickets", {"attack": 0, "defense": 0})
         scores = match.setdefault("scores", {"attack": 0, "defense": 0})
-        images = [f"cricket_ball_{bat_value}.png"]
+        images = [f"cricket_number_{bat_value}.png"]
         out_name = str(bat_choice.get("sender") or "اللاعب").strip().lstrip("@")
         bowler_name = str(bowl_choice.get("sender") or "المدافع").strip().lstrip("@")
 
@@ -780,7 +797,8 @@ class CricketGame:
         data = self.state.load()
         events = data.get("events", [])
         return max(
-            (int(item.get("id", 0)) for item in events if isinstance(item, dict) and item.get("room_key") == room_key),
+            (int(item.get("id", 0)) for item in events
+             if isinstance(item, dict) and (item.get("broadcast") or item.get("room_key") == room_key)),
             default=0,
         )
 
@@ -789,5 +807,7 @@ class CricketGame:
         data = self.state.load()
         return [
             dict(item) for item in data.get("events", [])
-            if isinstance(item, dict) and item.get("room_key") == room_key and int(item.get("id", 0)) > int(event_id)
+            if isinstance(item, dict)
+            and (item.get("broadcast") or item.get("room_key") == room_key)
+            and int(item.get("id", 0)) > int(event_id)
         ]

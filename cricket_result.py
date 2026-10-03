@@ -108,15 +108,21 @@ def render_result_image(
     def panel(box, title_text, players_list, total, rtl_title=True):
         cx = (box[0] + box[2]) // 2
         _text(draw, (cx, 255), title_text, team if _has_arabic(title_text) else _latin_font(34), anchor="mm", rtl=rtl_title)
-        _text(draw, (cx, 320), f"{int(total):,} نقطة", score, anchor="mm")
+        draw.text((cx - 12, 320), f"{int(total):,}", font=score, fill=(245, 247, 250), anchor="rm")
+        _text(draw, (cx + 12, 320), "نقطة", score, anchor="lm", rtl=True)
         y = 390
         if not players_list:
             _text(draw, (cx, y), "لا يوجد لاعبين", small, anchor="mm", rtl=True)
         for index, player in enumerate(players_list, 1):
             value = int(scores.get(player, 0))
-            player_font = name if _has_arabic(player) else latin_name
-            _text(draw, (box[0] + 38, y), f"{index}. @{player}", player_font, anchor="lm", rtl=_has_arabic(player))
-            _text(draw, (box[2] - 38, y), f"{value}", score, anchor="rm")
+            player_text = str(player).lstrip("@").strip()
+            player_font = name if _has_arabic(player_text) else latin_name
+            # Do not mix Arabic with the Latin index/@ in one RTL draw call.
+            # Drawing them separately prevents Arabic names from appearing
+            # reversed or with punctuation in the wrong place.
+            draw.text((box[0] + 38, y), f"{index}.", font=_latin_font(25), fill=(245, 247, 250), anchor="lm")
+            _text(draw, (box[0] + 82, y), player_text, player_font, anchor="lm", rtl=_has_arabic(player_text))
+            _text(draw, (box[2] - 38, y), f"{value}", score, anchor="rm", rtl=False)
             y += 65
 
     panel(left, str(team1_name), p1, team1_score, _has_arabic(str(team1_name)))
