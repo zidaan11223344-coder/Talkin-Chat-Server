@@ -8,7 +8,7 @@ from typing import Iterable
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parent
-OUTPUT_DIR = ROOT / "generated_games"
+OUTPUT_DIR = Path(os.getenv("CRICKET_MEDIA_DIR", str(ROOT / "generated_games")))
 FONT_CANDIDATES = (
     os.getenv("CRICKET_FONT", "").strip(),
     str(ROOT / "vendor" / "assets" / "NotoSansArabic-CondensedSemiBold.ttf"),

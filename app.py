@@ -5,7 +5,9 @@ import json
 import os
 import signal
 import threading
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import unquote, urlparse
 
 from dotenv import load_dotenv
 
@@ -17,7 +19,20 @@ class HealthHandler(BaseHTTPRequestHandler):
     service: BotServerService | None = None
 
     def do_GET(self):  # noqa: N802
-        if self.path.rstrip("/") not in {"", "/health", "/status"}:
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/cricket-media/") and self.service:
+            name = Path(unquote(parsed.path[len("/cricket-media/"):])).name
+            media = self.service.data_dir / "cricket_media" / name
+            if name.startswith("cricket_result_") and media.is_file():
+                payload = media.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+        if parsed.path.rstrip("/") not in {"", "/health", "/status"}:
             self.send_response(404); self.end_headers(); return
         payload = json.dumps((self.service.health() if self.service else {"status": "starting"}), ensure_ascii=False).encode("utf-8")
         self.send_response(200)

@@ -396,6 +396,12 @@ class RestrictedTalkinBot(TalkinBot):
         send(text)
 
     def _cricket_asset_url(self, filename: str) -> str:
+        filename = str(filename or "").strip()
+        if filename.startswith("cricket_result_"):
+            base = (os.getenv("CRICKET_RESULT_BASE_URL", "").strip()
+                    or os.getenv("CRICKET_PUBLIC_BASE_URL", "").strip()
+                    or os.getenv("PUBLIC_BASE_URL", "").strip()).rstrip("/")
+            return f"{base}/cricket-media/{filename}" if base else filename
         base = (os.getenv("CRICKET_ASSET_BASE_URL", "").strip()
                 or "https://raw.githubusercontent.com/zidaan11223344-coder/Talkin-Chat-Server/main/vendor/assets").rstrip("/")
         return f"{base}/{filename}"
@@ -671,27 +677,11 @@ class RestrictedTalkinBot(TalkinBot):
             return True
         if not self._is_master(sender):
             # Prevent non-masters from probing any control command.
-            return low.startswith(("a@", "o@", "b@", "bl@", "u@", "ub@", "k@", "m@", ".u", "حماية", "حمايه", "inv", "i@", "l@", "mas@", "umas@", "master@", "delmaster@", "+mf@", "-mf@", "mf@", "mr@"))
+            return low.startswith(("a@", "o@", "b@", "u@", "ub@", "k@", "m@", ".u", "حماية", "حمايه", "inv", "i@", "l@", "mas@", "umas@", "master@", "delmaster@", "+mf@", "-mf@", "mf@", "mr@"))
         if self._handle_protection_command(room, text):
             return True
         if low in {".u", "undo"}:
             self._undo_last_bot_action(sender)
-            return True
-        global_ban = re.fullmatch(r"bl@(.+)", str(text).strip(), re.I)
-        if global_ban:
-            target = global_ban.group(1).strip().lstrip("@")
-            try:
-                action_id, room_count = self._room_actions.enqueue(
-                    target, self._managed_controller_rooms(), sender, operation="ban"
-                )
-                reply = f"✅ حُفظ طلب حظر @{target} في {room_count} غرفة. رقم العملية: {action_id}."
-            except Exception as exc:
-                reply = f"❌ تعذر إنشاء الحظر الشامل: {exc}"
-            if getattr(self, "_command_is_private", False):
-                self.send_private_text(sender, reply)
-            else:
-                self.send_room_text(room, reply)
-            self._process_room_actions()
             return True
         short = re.fullmatch(r"(a|o|b|ub|u|k|m)@(.+)", str(text).strip(), re.I)
         if short:

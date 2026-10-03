@@ -36,6 +36,9 @@ game = CricketGame("data/cricket")
 data/cricket/cricket_state.json
 ```
 
+يجب أن يشير كل بوت متحكم إلى **نفس مجلد البيانات الدائم**؛ لا تضع ملف اللعبة داخل مجلد
+البوت الفرعي، وإلا ستظهر غرف المباراة منفصلة ولن تعود البوتات بعد إعادة التشغيل.
+
 ## أوامر Talkin الحالية
 
 - `.cr 1` — تشغيل الكركيت وفتح الإعداد.
@@ -61,7 +64,7 @@ data/cricket/cricket_state.json
 - تبدأ المباراة نفسها في الغرفتين.
 - الأحداث والنتيجة تُرسل لكل غرفة مشاركة.
 
-إذا كانت المباراة من غرفة واحدة فقط، يمكن استخدام `.cr N` مباشرة للعب ضد S-Boot.
+إذا كانت المباراة من غرفة واحدة فقط، استخدم `.cricket N` مباشرة (بعد `.cr 1`) للعب ضد S-Boot.
 
 ## الربط مع بوت آخر
 
@@ -71,6 +74,9 @@ data/cricket/cricket_state.json
 2. استدعاء `game.choose_team(room, "attack"/"defense")` عند اختيار الفريق.
 3. استدعاء `game.submit_ball(room, sender, number)` عند الرقم 0–6.
 4. قراءة `game.events_after(room, cursor)` وإرسال كل حدث إلى الغرفة المحددة.
-5. إرسال الصور الموجودة في `event["images"]` من مجلد الأصول/`generated_games`.
+5. إرسال الصور الموجودة في `event["images"]` من مجلد الأصول/`cricket_media`.
+
+لإرسال صورة النتيجة عبر Talkin، عيّن `CRICKET_PUBLIC_BASE_URL` أو `PUBLIC_BASE_URL` إلى
+عنوان الخدمة الذي يمرر `/cricket-media/<filename>`.
 
 هذا يجعل `cricket_game.py` محركًا مستقلًا ويمكن ربطه بأي بوت آخر.

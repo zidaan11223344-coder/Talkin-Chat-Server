@@ -18,7 +18,15 @@ BOT_TEAM_KEY = "__sboot_cricket_bot__"
 
 
 def _blank() -> dict[str, Any]:
-    return {"enabled": False, "enabled_rooms": {}, "next_event_id": 0, "match": None, "events": [], "points": {}}
+    return {
+        "enabled": False,
+        "enabled_rooms": {},
+        "next_event_id": 0,
+        "match": None,
+        "events": [],
+        "points": {},
+        "wins": {},
+    }
 
 
 def _key(room: str) -> str:
@@ -497,10 +505,12 @@ class CricketGame:
         if winning_players:
             base, remainder = divmod(prize, len(winning_players))
             points = data.setdefault("points", {})
+            wins = data.setdefault("wins", {})
             for index, player in enumerate(winning_players):
                 amount = base + (1 if index < remainder else 0)
                 key = _user_key(player)
                 points[key] = int(points.get(key, 0)) + amount
+                wins[key] = int(wins.get(key, 0)) + 1
                 reward_lines.append(f"💰 @{player} +{amount:,} نقطة")
 
         result_image = self._render_result_image(
@@ -691,11 +701,16 @@ class CricketGame:
         data = self.state.load()
         return int((data.get("points") or {}).get(key, 0)) if key else 0
 
-    def leaderboard(self, limit: int = 10) -> list[tuple[str, int]]:
+    # Public aliases used by the Talkin controller integration.
+    def points_for(self, username: str) -> int:
+        return self.get_points(username)
+
+    def leaderboard(self, limit: int = 10) -> list[tuple[str, int, int]]:
         data = self.state.load()
         points = data.get("points") or {}
-        rows = [(str(name), int(value)) for name, value in points.items()]
-        rows.sort(key=lambda item: (-item[1], item[0]))
+        wins = data.get("wins") or {}
+        rows = [(str(name), int(value), int(wins.get(name, 0))) for name, value in points.items()]
+        rows.sort(key=lambda item: (-item[1], -item[2], item[0]))
         return rows[:max(1, int(limit))]
 
     def current(self) -> dict[str, Any] | None:

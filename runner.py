@@ -32,6 +32,7 @@ def main() -> int:
         "BOT_FIRST_CONNECTION_STATUS": str(record["profile_status"]),
         "BOT_BASE_STATUS": str(record["profile_status"]),
         "BOT_DATA_DIR": str(child_root),
+        "CRICKET_MEDIA_DIR": str(Path(args.data_dir).resolve() / "cricket_media"),
         "ASSET_HTTP_ENABLED": "0",
         "GITHUB_SYNC": "0",
         "AUTO_JOIN_ALL_ROOMS": "0",

@@ -153,8 +153,10 @@ class RegistryTests(unittest.TestCase):
     def test_help_contains_requested_paged_moderation_commands(self):
         source = Path(__file__).resolve().parents[1] / "restricted_runtime.py"
         runtime_text = source.read_text(encoding="utf-8")
-        for text in ("📋 أوامر الإدارة — 1 | الحظر والطرد", "bl@اسم", "ub@اسم", "m@اسم", "📌 للقائمة التالية اكتب ns"):
+        for text in ("📋 أوامر الإدارة — 1 | الإدارة والحظر", "ub@اسم", "m@اسم", "📌 للقائمة التالية اكتب ns"):
             self.assertIn(text, runtime_text)
+        self.assertNotIn("bl@اسم", runtime_text)
+        self.assertNotIn('re.fullmatch(r"bl@', runtime_text)
         self.assertIn("def _advance_restricted_list_page", runtime_text)
 
     def test_restricted_admin_aliases_and_nonmaster_help_dispatch(self):
@@ -227,8 +229,7 @@ class RegistryTests(unittest.TestCase):
     def test_cricket_two_players_in_one_room_and_turn_order(self):
         game = CricketGame(self.temp.name)
         game.set_enabled("Room A", True)
-        self.assertIsNone(game.begin_setup("Room A"))
-        self.assertIsNone(game.select_player_count("Room A", 2))
+        self.assertIsNone(game.start("Room A", 2))
         self.assertIsNone(game.join("Room A", "alpha"))
         self.assertIsNone(game.join("Room A", "beta"))
         state = game.current()
@@ -313,9 +314,9 @@ class RegistryTests(unittest.TestCase):
         controller._cricket = CricketGame(self.temp.name)
         controller._deliver_cricket_events = lambda: None
         controller.send_room_text = lambda *_args: None
-        self.assertTrue(controller._handle_controller_command("Room A", "master", ".cr 1"))
-        self.assertEqual(controller._cricket.current()["stage"], "setup")
-        self.assertTrue(controller._handle_controller_command("Room A", "master", "3"))
+        controller._cricket.set_enabled("Room A", True)
+        self.assertTrue(controller._handle_controller_command("Room A", "master", ".cricket 3"))
+        self.assertEqual(controller._cricket.current()["stage"], "lobby")
         self.assertEqual(controller._cricket.current()["target_players"], 3)
         self.assertTrue(controller._handle_controller_command("Room A", "player1", "Join"))
         self.assertTrue(controller._handle_controller_command("Room A", "player2", "Join"))
