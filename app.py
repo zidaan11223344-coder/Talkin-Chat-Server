@@ -45,6 +45,7 @@ def main() -> int:
         print("Loaded persistent encryption key." if key_existed else "Created persistent encryption key on first startup.", flush=True)
     else:
         CredentialVault(state_key)
+    print(f"S-Boot runtime data directory: {data_dir}", flush=True)
 
     # The central account is a private command server and must not join a room.
     # These values are read at Talkin runtime import time.

@@ -38,6 +38,12 @@ def main() -> int:
         "RUNNING_AS_MASTER": "0",
         "MASTER_SERVICE_ENABLED": "0",
     })
+    # Report room-join success/failure to the master unless explicitly disabled.
+    os.environ.setdefault("BOT_JOIN_NOTIFY_MASTER", "1")
+    print(
+        f"[S-BOOT] saved credentials decrypted; starting {record['role']} bot for room {record['room']}",
+        flush=True,
+    )
     registry.update_runtime(record["id"], "starting", os.getpid())
     # Import after environment variables are ready: the Talkin runtime reads
     # all account settings at module import time.

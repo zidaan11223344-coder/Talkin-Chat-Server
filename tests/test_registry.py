@@ -15,7 +15,7 @@ from registry import BotRegistry, BotSpec, RegistryError
 from room_actions import RoomActionQueue
 from restricted_runtime import RestrictedTalkinBot
 from state import CredentialVault, StateError, load_or_create_state_key, status_value
-from vendor.talkin_runtime import decode_message
+from vendor.talkin_runtime import TalkinBot, decode_message
 
 
 class RegistryTests(unittest.TestCase):
@@ -101,6 +101,33 @@ class RegistryTests(unittest.TestCase):
 
         unrelated = process_response({"type": "success", "value": "Room A"}, {})
         self.assertEqual(unrelated, [])
+
+    def test_room_join_timeout_marks_bot_offline_and_notifies_master(self):
+        record = self.registry.create(BotSpec("control", "pass", "Room A", "controller", "master"))
+        bot = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
+        bot.record_id = record["id"]
+        bot.registry_root = Path(self.temp.name)
+        bot.master = "master"
+        bot._pending_room_joins = {"Room A": {"room": "Room A"}}
+        messages = []
+        bot.send_private_text = lambda user, text: messages.append((user, text))
+        bot.log = lambda *_args: None
+
+        with patch("restricted_runtime.TalkinBot._join_timeout", autospec=True) as base_timeout, \
+             patch.dict("os.environ", {
+                 "STATE_ENCRYPTION_KEY": self.key,
+                 "SERVER_ADMIN_NAME": "Admin",
+                 "BOT_JOIN_NOTIFY_MASTER": "1",
+             }), \
+             patch("builtins.print"):
+            bot._join_timeout("Room A")
+
+        base_timeout.assert_called_once_with(bot, "Room A")
+        updated = self.registry.get(record["id"])
+        self.assertEqual(updated["status"], "offline")
+        self.assertIn("Timed out", updated["error"])
+        self.assertEqual(messages[0][0], "master")
+        self.assertIn("Room A", messages[0][1])
 
     def test_server_status_uses_blue_in_place_of_yellow(self):
         source = Path(__file__).resolve().parents[1] / "app.py"

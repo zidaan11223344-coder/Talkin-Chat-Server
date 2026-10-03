@@ -32,6 +32,10 @@ class BotServerService:
             old = self._processes.get(bot_id)
             if old and old.poll() is None:
                 return
+            print(
+                f"[S-BOOT] launching child role={record.get('role', 'unknown')} room={record.get('room', '')}",
+                flush=True,
+            )
             env = os.environ.copy()
             env["BOT_SERVER_DATA_DIR"] = str(self.data_dir)
             env["STATE_ENCRYPTION_KEY"] = self.encryption_key
@@ -43,6 +47,7 @@ class BotServerService:
             )
             self._processes[bot_id] = process
             self.registry.update_runtime(bot_id, "starting", process.pid)
+            print(f"[S-BOOT] child process started pid={process.pid}", flush=True)
             watcher = threading.Thread(target=self._watch, args=(bot_id, process), daemon=True, name=f"watch-{bot_id[:8]}")
             watcher.start()
 
@@ -52,6 +57,11 @@ class BotServerService:
             if self._processes.get(bot_id) is process:
                 self._processes.pop(bot_id, None)
         record = self.registry.get(bot_id)
+        print(
+            f"[S-BOOT] child process exited id={bot_id[:8]} code={code} "
+            f"room={(record or {}).get('room', '')}",
+            flush=True,
+        )
         if not record or str(record.get("status")) in {"deleted", "stopped"} or self._stopping.is_set():
             return
         self.registry.update_runtime(bot_id, "reconnecting", None, f"child exited with code {code}")

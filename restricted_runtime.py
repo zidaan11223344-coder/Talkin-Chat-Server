@@ -67,6 +67,40 @@ class RestrictedTalkinBot(TalkinBot):
             "مالك", "اونر", "أونر", "صانع", "صانع_الغرفة",
         }
 
+    def join_room(self, room: str, force: bool = False, requested_by: str = ""):
+        sent = super().join_room(room, force=force, requested_by=requested_by)
+        if sent:
+            print(f"[S-BOOT] room-join request sent: {room}", flush=True)
+        return sent
+
+    def _join_timeout(self, room_norm: str) -> None:
+        pending = getattr(self, "_pending_room_joins", {}).get(str(room_norm or ""))
+        if not pending:
+            return
+        room = str(pending.get("room") or room_norm).strip()
+        super()._join_timeout(room_norm)
+        reason = "Timed out waiting for Talkin to confirm the room join."
+        try:
+            from registry import BotRegistry
+            registry = BotRegistry(
+                self.registry_root,
+                os.environ["STATE_ENCRYPTION_KEY"],
+                os.getenv("SERVER_ADMIN_NAME", ""),
+            )
+            registry.update_runtime(self.record_id, "offline", None, reason)
+        except Exception as exc:
+            self.log("[S-BOOT] join-timeout state update failed", repr(exc))
+        print(f"[S-BOOT] room-join timeout: {room}", flush=True)
+        if os.getenv("BOT_JOIN_NOTIFY_MASTER", "1") == "1" and self.master:
+            try:
+                self.send_private_text(
+                    self.master,
+                    f"⚠️ لم يصل تأكيد دخول البوت @{BOT_ID} إلى الغرفة {room} خلال المهلة.\n"
+                    "تحقق من اسم الغرفة، اتصال حساب Talkin، وصلاحية دخول البوت.",
+                )
+            except Exception as exc:
+                self.log("[S-BOOT] join-timeout master notification failed", repr(exc))
+
     def _request_controller_rank(self, room: str) -> None:
         """Ask Talkin for the live roster before enabling a controller bot."""
         if self.role != "controller":
@@ -835,6 +869,7 @@ class RestrictedTalkinBot(TalkinBot):
         if not room:
             return
         if event_type in {"you_joined", "you_rejoined"}:
+            print(f"[S-BOOT] room-join confirmed: {room}", flush=True)
             room_key = _norm_room(room)
             pending_join = self._pending_room_joins.pop(room_key, None)
             if pending_join and pending_join.get("timer"):
@@ -871,6 +906,7 @@ class RestrictedTalkinBot(TalkinBot):
             "room_full_rejoin", "room_wrong_password_rejoin",
             "room_needs_password_rejoin", "room_needs_captcha_rejoin",
         }:
+            print(f"[S-BOOT] room-join rejected: room={room} result={event_type}", flush=True)
             room_key = _norm_room(room)
             pending_join = self._pending_room_joins.pop(room_key, None)
             if pending_join and pending_join.get("timer"):
