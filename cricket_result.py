@@ -62,16 +62,18 @@ def render_result_image(
     player_scores: dict[str, int] | None = None,
     winner: str = "تعادل",
     prize: int = 0,
+    output_dir: str | Path | None = None,
     # Backward-compatible arguments for older integrations.
     players: Iterable[str] | None = None,
     human_score: int | None = None,
     bot_score: int | None = None,
 ) -> str:
     """Render a reusable two-team cricket result card."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    target_dir = Path(output_dir) if output_dir else OUTPUT_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
     safe_id = "".join(ch for ch in str(match_id) if ch.isalnum())[:24] or "match"
     filename = f"cricket_result_{safe_id}.png"
-    path = OUTPUT_DIR / filename
+    path = target_dir / filename
 
     if players is not None:
         team1_players = players

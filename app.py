@@ -23,7 +23,11 @@ class HealthHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/cricket-media/") and self.service:
             name = Path(unquote(parsed.path[len("/cricket-media/"):])).name
             media = self.service.data_dir / "cricket_media" / name
-            if name.startswith("cricket_result_") and media.is_file():
+            if not media.is_file() and (
+                name.startswith("cricket_ball_") or name in {"cricket_duck.png", "cricket_hattrick.png"}
+            ):
+                media = Path(__file__).resolve().parent / "vendor" / "assets" / name
+            if (name.startswith("cricket_result_") or name.startswith("cricket_ball_") or name in {"cricket_duck.png", "cricket_hattrick.png"}) and media.is_file():
                 payload = media.read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", "image/png")
