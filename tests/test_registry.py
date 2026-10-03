@@ -272,7 +272,7 @@ class RegistryTests(unittest.TestCase):
         self.assertIsNone(game.current())
         events = game.events_after("Room A", 0)
         images = [image for event in events for image in event["images"]]
-        self.assertIn("cricket_ball_1.png", images)
+        self.assertIn("cricket_number_1.png", images)
         self.assertIn("cricket_result_", "\n".join(images))
         self.assertIn("بوت S-Boot", "\n".join(event["text"] for event in events))
         self.assertEqual(game.get_points("alpha"), 100000)
@@ -291,7 +291,7 @@ class RegistryTests(unittest.TestCase):
                 self.assertIsNone(game.submit_ball("Room A", "solo_player", 1))
         self.assertIsNone(game.current())
         images = [image for event in game.events_after("Room A", 0) for image in event["images"]]
-        self.assertIn("cricket_ball_1.png", images)
+        self.assertIn("cricket_number_1.png", images)
         delivered_media = []
         controller = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
         controller.role = "controller"
@@ -303,7 +303,7 @@ class RegistryTests(unittest.TestCase):
         controller.send_room_media = lambda room, url, kind: delivered_media.append((room, url, kind))
         controller.send_room_text = lambda *_args: None
         controller._deliver_cricket_events()
-        self.assertIn(("Room A", "https://assets.test/cricket_ball_1.png", "image"), delivered_media)
+        self.assertIn(("Room A", "https://assets.test/cricket_number_1.png", "image"), delivered_media)
 
     def test_controller_commands_route_size_selection_and_solo_bot(self):
         controller = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
@@ -326,7 +326,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_all_cricket_images_are_transparent_and_under_100_kb(self):
         root = Path(__file__).resolve().parents[1] / "vendor" / "assets"
-        expected = [*(f"cricket_ball_{i}.png" for i in range(0, 7)), "cricket_duck.png", "cricket_hattrick.png"]
+        expected = [*(f"cricket_number_{i}.png" for i in range(0, 7)), "cricket_duck.png", "cricket_hattrick.png"]
         for name in expected:
             path = root / name
             self.assertTrue(path.is_file(), name)
