@@ -597,6 +597,21 @@ class CricketGame:
                 bat_choice, bowl_choice = (human_choice, bot_choice) if batting == human_team else (bot_choice, human_choice)
                 return self._resolve_ball(data, match, participants, bat_choice, bowl_choice)
 
+            # Determine the role of this room for the current ball.
+            # Without this assignment, `side` was undefined in two-room
+            # matches and numeric choices failed with NameError.
+            if team == batting:
+                expected = self._next_player(match, batting, batting=True)
+                side = "bat"
+            elif team == bowling:
+                expected = self._next_player(match, bowling, batting=False)
+                side = "bowl"
+            else:
+                return "⛔ لم يتم تحديد فريق غرفتك في المباراة."
+            if _user_key(expected) != user_key:
+                role = "الضارب" if side == "bat" else "المخمّن"
+                return f"⏳ الدور الآن على @{expected} ({role})."
+
             choices = match.setdefault("choices", {})
             if choices.get(side):
                 return "⏳ سجّل لاعب فريقك اختياره لهذه الكرة بالفعل."
