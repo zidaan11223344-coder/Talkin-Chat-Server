@@ -15,6 +15,7 @@ from state import JsonState, normalize
 from cricket_game import CricketGame
 from cricket_renderer import render_scoreboard
 from invite_templates import InviteTemplateStore
+from welcome_templates import WelcomeTemplateStore
 from room_actions import RoomActionQueue
 
 # Child environment is populated by runner.py before this module is imported.
@@ -46,6 +47,7 @@ class RestrictedTalkinBot(TalkinBot):
         super().__init__()
         self.invites_enabled = True
         self._invite_templates = InviteTemplateStore(self.registry_root)
+        self._welcome_templates = WelcomeTemplateStore(self.registry_root)
         self._room_actions = RoomActionQueue(self.registry_root)
         self._room_action_lock = threading.Lock()
         self._cricket = CricketGame(self.registry_root)
@@ -53,6 +55,7 @@ class RestrictedTalkinBot(TalkinBot):
         self._cricket_delivery_lock = threading.Lock()
         self._shared_worker_stop = threading.Event()
         self._help_page_by_sender: dict[str, int] = {}
+        self._sboot_profile_ids: dict[str, str] = {}
 
     def _is_master(self, username: str) -> bool:
         return bool(normalize(username) and normalize(username) == normalize(self.master))
@@ -216,10 +219,16 @@ class RestrictedTalkinBot(TalkinBot):
             "invmsg@النص — تغيير نص الدعوة\n"
             "invmsg@reset — استعادة النص الافتراضي\n"
             "i@اسم — دعوة مستخدم | l@inv — سجل الدعوات\n\n"
-            "📋 l@m / l@a / l@o / l@b / l@all — قوائم الغرفة\n"
-            "l@mas — الماسترات | mas@اسم — إضافة ماستر مساعد\n"
-            "umas@اسم — إزالة ماستر مساعد\n\n"
-            "🏏 الكركيت: .cr 1 ثم اختر 1–4 لاعبين لكل غرفة\n"
+                "📋 l@m / l@a / l@o / l@b / l@all — قوائم الغرفة\n"
+                "l@mas — الماسترات | mas@اسم — إضافة ماستر مساعد\n"
+                "umas@اسم — إزالة ماستر مساعد\n\n"
+                "🖼️ صورتي — عرض صورتك إذا وصلت ضمن قائمة أعضاء الغرفة\n"
+                "ملفي — اسمك ورتبتك ومعرّفك المتاح في بيانات الغرفة\n\n"
+                "👋 الترحيب بالأعضاء (للماستر): wc@on / wc@off\n"
+                "+wc@نص الترحيب — يقبل {room} و{username} و{id}\n"
+                "wcs@on / wcs@off — تفعيل/إيقاف الترحيب المخصص\n"
+                "+wcs@اسم المستخدم@نص — حفظ ترحيب لهذا المستخدم\n\n"
+                "🏏 الكركيت: .cr 1 ثم اختر 1–4 لاعبين لكل غرفة\n"
             ".cr 0 — إيقاف | Join — انضمام | bot — ضد البوت\n"
             "1 هجوم / 2 دفاع، ثم يرسل اللاعب دوره رقمًا من 0 إلى 6\n"
             "💰 الجائزة: 200,000 نقطة للفريق الفائز وتُقسم بالتساوي بين لاعبيه\n"
@@ -269,11 +278,6 @@ class RestrictedTalkinBot(TalkinBot):
             else:
                 self.send_room_text(room, body)
             return True
-        response = "📌 لا توجد قائمة إضافية. أرسل help لعرض قائمة الأوامر."
-        if getattr(self, "_command_is_private", False):
-            self.send_private_text(sender, response)
-        else:
-            self.send_room_text(room, response)
         return False
 
     def _send_protection_menu(self, room: str) -> None:
@@ -624,6 +628,12 @@ class RestrictedTalkinBot(TalkinBot):
             return True
         return False
 
+    def _reply_controller_command(self, room: str, sender: str, text: str) -> None:
+        if getattr(self, "_command_is_private", False):
+            self.send_private_text(sender, text)
+        else:
+            self.send_room_text(room, text)
+
     def _handle_controller_command(self, room: str, sender: str, text: str) -> bool:
         """Dispatch only the requested management, protection, invite and list commands."""
         if self.role != "controller" or not self._is_own_room(room):
@@ -662,7 +672,31 @@ class RestrictedTalkinBot(TalkinBot):
                 else:
                     self.send_room_text(room, response)
             else:
-                self._advance_restricted_list_page(room, sender)
+                if not self._advance_restricted_list_page(room, sender):
+                    # Fall back to the next help page if a reconnect cleared
+                    # the in-memory cursor after the first help request.
+                    self._help_page_by_sender[user_key] = 2
+                    self._send_help(room, private_to=sender if getattr(self, "_command_is_private", False) else "", page=2)
+            return True
+        if low in {"صورتي", "myphoto"}:
+            photo = str(getattr(self, "user_photos", {}).get(_norm_user(sender), "") or "").strip()
+            is_private = getattr(self, "_command_is_private", False)
+            if photo.startswith(("http://", "https://")):
+                if is_private:
+                    self.send_private_media(sender, photo, "image")
+                else:
+                    self.send_room_media(room, photo, "image")
+            else:
+                self._reply_controller_command(room, sender, "لم تصل صورة حسابك ضمن بيانات أعضاء الغرفة حتى الآن.")
+            return True
+        if low in {"ملفي", "myprofile"}:
+            roles = getattr(self, "room_users", {}).get(room, {})
+            role = next((value for name, value in roles.items() if normalize(name) == normalize(sender)), "غير معروف")
+            user_id = getattr(self, "_sboot_profile_ids", {}).get(_norm_user(sender), "غير متاح")
+            reply = (f"👤 الملف المتاح عبر بيانات الغرفة\nالمستخدم: @{sender.lstrip('@')}\n"
+                     f"الغرفة: {room}\nالرتبة: {role}\nالمعرّف: {user_id}\n"
+                     "إحصاءات المشاهدات والهدايا والأصدقاء لا يوفّرها بروتوكول هذا السيرفر.")
+            self._reply_controller_command(room, sender, reply)
             return True
         if low in {"نقاط", "points", "point", "رصيدي", "نقاطي"}:
             value = self._cricket.points_for(sender)
@@ -696,6 +730,44 @@ class RestrictedTalkinBot(TalkinBot):
                 self.send_private_text(sender, reply)
             else:
                 self.send_room_text(room, reply)
+            return True
+        welcome_command = (
+            low in {"wc@on", "wc@off", "wcs@on", "wcs@off"}
+            or str(text).strip().casefold().startswith("+wc@")
+            or str(text).strip().casefold().startswith("+wcs@")
+        )
+        if welcome_command:
+            if not self._is_master(sender):
+                self._reply_controller_command(room, sender, "❌ أوامر الترحيب متاحة لماستر الغرفة فقط.")
+                return True
+            try:
+                if low == "wc@on":
+                    self._welcome_templates.set_enabled(room, True)
+                    reply = "✅ تم تشغيل الترحيب بالأعضاء في هذه الغرفة."
+                elif low == "wc@off":
+                    self._welcome_templates.set_enabled(room, False)
+                    reply = "⏸️ تم إيقاف الترحيب بالأعضاء في هذه الغرفة."
+                elif low == "wcs@on":
+                    self._welcome_templates.set_custom_enabled(room, True)
+                    reply = "✅ تم تفعيل الترحيب المخصص؛ سيُستخدم للمستخدمين الذين حُفظ لهم نص خاص."
+                elif low == "wcs@off":
+                    self._welcome_templates.set_custom_enabled(room, False)
+                    reply = "⏸️ تم إيقاف الترحيب المخصص."
+                else:
+                    custom = re.fullmatch(r"\+wcs@([^@]+)@(.+)", str(text).strip(), re.I | re.S)
+                    if custom:
+                        self._welcome_templates.set_user(room, custom.group(1), custom.group(2))
+                        reply = f"✅ تم حفظ ترحيب مخصص للمستخدم @{custom.group(1).strip().lstrip('@')}."
+                    else:
+                        template = re.fullmatch(r"\+wc@(.+)", str(text).strip(), re.I | re.S)
+                        if not template:
+                            self._reply_controller_command(room, sender, "الصيغة: +wc@نص الترحيب")
+                            return True
+                        self._welcome_templates.set_default(room, template.group(1))
+                        reply = "✅ تم حفظ نص الترحيب العام. استخدم {room} و{username} و{id} كمتغيرات."
+            except ValueError as exc:
+                reply = "❌ " + str(exc)
+            self._reply_controller_command(room, sender, reply)
             return True
         if not self._is_master(sender):
             # Prevent non-masters from probing any control command.
@@ -956,6 +1028,20 @@ class RestrictedTalkinBot(TalkinBot):
                 pass
         elif event_type == "user_joined" and username:
             self.room_users[room][username] = str(event.get(8, "") or "none").lower()
+            if (self.role == "controller" and self._is_own_room(room)
+                    and normalize(username) != normalize(BOT_ID)):
+                # Some Talkin builds may expose named ID fields; avoid
+                # guessing undocumented protobuf field numbers.
+                user_id = str(
+                    event.get("id") or event.get("user_id") or event.get(14)
+                    or getattr(self, "_sboot_profile_ids", {}).get(_norm_user(username), "")
+                ).strip()
+                welcome = self._welcome_templates.render(room, username, user_id)
+                if welcome:
+                    try:
+                        self.send_room_text(room, welcome)
+                    except Exception as exc:
+                        self.log("[S-BOOT] member welcome failed", username, repr(exc))
         elif event_type == "user_left" and username:
             self.room_users[room].pop(username, None)
             if normalize(username) == normalize(BOT_ID):
@@ -1015,6 +1101,10 @@ class RestrictedTalkinBot(TalkinBot):
             if result.get("room_event"):
                 self.handle_room_event(result)
             if result.get("users") or result.get("room_admin"):
+                try:
+                    self._cache_user_photos_from_result(result)
+                except Exception:
+                    pass
                 if not result.get("_occupants_room") and len(self._pending_room_lists) == 1:
                     result["_occupants_room"] = next(iter(self._pending_room_lists))
                 rank_room = str(result.get("_occupants_room") or self.target_room or "").strip()
@@ -1026,12 +1116,22 @@ class RestrictedTalkinBot(TalkinBot):
                     # response immediately and skips admins/members.
                     if not self._complete_pending_room_list(result):
                         self.process_occupants_for_invite(result)
+            for member_event in (result.get("stream_event"), result.get("call_info"), result.get("room_event")):
+                if isinstance(member_event, dict):
+                    try:
+                        if self._cache_stream_member_event(member_event):
+                            username = str(member_event.get(2, "") or "").strip()
+                            member_id = str(member_event.get(14, "") or member_event.get("user_id", "")).strip()
+                            if username and member_id:
+                                self._sboot_profile_ids[_norm_user(username)] = member_id
+                    except Exception:
+                        pass
             chat = result.get("chat_message") or {}
             sender = str(chat.get(3, "") or "").strip()
             body = str(chat.get(5, "") or "").strip()
             if sender and body and (
                 self._is_master(sender)
-                or body.casefold().strip() in {"help", "مساعدة", "الاوامر", "الأوامر", "ns"}
+                or body.casefold().strip() in {"help", "مساعدة", "الاوامر", "الأوامر", "ns", "صورتي", "myphoto", "ملفي", "myprofile"}
             ):
                 self._command_is_private = True
                 try:

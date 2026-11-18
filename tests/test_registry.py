@@ -3,6 +3,7 @@ import subprocess
 import sys
 import threading
 import unittest
+from collections import defaultdict
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ from registry import BotRegistry, BotSpec, RegistryError
 from room_actions import RoomActionQueue
 from restricted_runtime import RestrictedTalkinBot
 from state import CredentialVault, StateError, load_or_create_state_key, status_value
+from welcome_templates import WelcomeTemplateStore
 from vendor.talkin_runtime import TalkinBot, decode_message
 
 
@@ -207,6 +209,66 @@ class RegistryTests(unittest.TestCase):
         bot.send_private_text = lambda sender, text: sent.append((sender, text))
         self.assertTrue(bot._advance_restricted_list_page("Room A", "master"))
         self.assertEqual(sent, [("master", "second\n\n✅ انتهت القوائم.")])
+
+    def test_ns_falls_back_to_help_page_two_when_cursor_is_missing(self):
+        bot = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
+        bot.role = "controller"
+        bot.target_room = "Room A"
+        bot._is_own_room = lambda room: room == "Room A"
+        bot._is_master = lambda _sender: False
+        bot._cricket = type("Game", (), {"current": lambda self: None})()
+        bot._help_page_by_sender = {}
+        bot._command_is_private = False
+        sent = []
+        bot.send_room_text = lambda room, text: sent.append((room, text))
+        self.assertTrue(bot._handle_controller_command("Room A", "guest", "ns"))
+        self.assertEqual(len(sent), 1)
+        self.assertIn("أوامر الإدارة — 2", sent[0][1])
+
+    def test_welcome_templates_persist_and_render_room_username_and_id(self):
+        store = WelcomeTemplateStore(self.temp.name)
+        store.set_default("Room A", "أهلًا {username} في {room}، رقمك {id}")
+        self.assertIsNone(store.render("Room A", "new_user", "123"))
+        store.set_enabled("Room A", True)
+        self.assertEqual(store.render("Room A", "new_user", "123"), "أهلًا new_user في Room A، رقمك 123")
+        store.set_user("Room A", "new_user", "أهلًا مخصص يا {username} في {room}")
+        self.assertEqual(store.render("Room A", "new_user", "123"), "أهلًا new_user في Room A، رقمك 123")
+        store.set_custom_enabled("Room A", True)
+        self.assertEqual(store.render("Room A", "new_user", "123"), "أهلًا مخصص يا new_user في Room A")
+        self.assertEqual(store.render("Room A", "other", "321"), "أهلًا other في Room A، رقمك 321")
+        restored = WelcomeTemplateStore(self.temp.name)
+        self.assertEqual(restored.render("Room A", "new_user", "123"), "أهلًا مخصص يا new_user في Room A")
+
+    def test_welcome_store_can_disable_general_and_custom_messages_independently(self):
+        store = WelcomeTemplateStore(self.temp.name)
+        store.set_default("Room A", "عام {username}")
+        store.set_user("Room A", "guest", "خاص {username}")
+        store.set_enabled("Room A", True)
+        self.assertEqual(store.render("Room A", "guest"), "عام guest")
+        store.set_custom_enabled("Room A", True)
+        self.assertEqual(store.render("Room A", "guest"), "خاص guest")
+        store.set_custom_enabled("Room A", False)
+        self.assertEqual(store.render("Room A", "guest"), "عام guest")
+        store.set_enabled("Room A", False)
+        self.assertIsNone(store.render("Room A", "guest"))
+
+    def test_controller_sends_configured_welcome_when_member_joins(self):
+        bot = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
+        bot.role = "controller"
+        bot.target_room = "Room A"
+        bot._is_own_room = lambda room: room == "Room A"
+        bot.room_users = defaultdict(dict)
+        bot._sboot_profile_ids = {}
+        bot._welcome_templates = WelcomeTemplateStore(self.temp.name)
+        bot._welcome_templates.set_default("Room A", "مرحبًا {username} في {room} ({id})")
+        bot._welcome_templates.set_enabled("Room A", True)
+        sent = []
+        bot.send_room_text = lambda room, text: sent.append((room, text))
+        bot._deliver_cricket_events = lambda: None
+        bot._process_room_actions = lambda: None
+        bot.log = lambda *_args: None
+        bot.handle_room_event({"room_event": {1: "user_joined", 22: "guest", 13: "Room A", 14: "98765"}})
+        self.assertEqual(sent, [("Room A", "مرحبًا guest في Room A (98765)")])
 
     def test_private_invite_history_is_one_bounded_message(self):
         bot = RestrictedTalkinBot.__new__(RestrictedTalkinBot)
